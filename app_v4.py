@@ -2,7 +2,7 @@ from __future__ import annotations
 import pandas as pd
 import numpy as np
 import streamlit as st
-import import quant_stock_radar_v4 as qr
+import quant_stock_radar_v4 as qr
 
 st.set_page_config(page_title='台美股量化雷達 V4', page_icon='📊', layout='wide')
 st.title('📊 台美股量化選股雷達 V4')
