@@ -204,32 +204,31 @@ bb_std = close.rolling(20).std()
 bb_upper = bb_mid + (2 * bb_std)
 bb_lower = bb_mid - (2 * bb_std)
 # Re-run syntax test
-    current = close.iloc[-1]
-    ret = lambda n: (current / close.iloc[-(n+1)] - 1) * 100 if len(close) > n else np.nan
+  current = close.iloc[-1]
+  ret = lambda n: (current / close.iloc[-(n+1)] - 1) * 100 if len(close) > n else np.nan
 
-    return {
-        "Latest Price": current,
-        "MA20": ma20.iloc[-1],
-        "MA60": ma60.iloc[-1],
-        "MA200": ma200.iloc[-1],
-        "Golden Cross": bool(ma20.iloc[-2] <= ma60.iloc[-2] and ma20.iloc[-1] > ma60.iloc[-1]),
-        "Above MA200": bool(current > ma200.iloc[-1]),
-        "MA60 Above MA200": bool(ma60.iloc[-1] > ma200.iloc[-1]),
-        "BIAS20": (current - ma20.iloc[-1]) / ma20.iloc[-1] * 100,
-        "RSI14": rrsi.iloc[-1],
-        "MACD": macd.iloc[-1],
-        "MACD Signal": macd_signal.iloc[-1],
-        "MACD Hist": macd_hist.iloc[-1],
-        "BB Upper": bb_upper.iloc[-1],
-        "BB Mid": bb_mid.iloc[-1],
-        "BB Lower": bb_lower.iloc[-1],
-        "Avg Volume20": avgvol20.iloc[-1],
-        "Volume Ratio": volume.iloc[-1] / avgvol20.iloc[-1] if avgvol20.iloc[-1] else np.nan,
-        "1M Return": ret(21),
-        "3M Return": ret(63),
-        "6M Return": ret(126),
-    }
-
+  return {
+    "Latest Price": current,
+    "MA20": ma20.iloc[-1],
+    "MA60": ma60.iloc[-1],
+    "MA200": ma200.iloc[-1],
+    "Golden Cross": bool(ma20.iloc[-2] <= ma60.iloc[-2] and ma20.iloc[-1] > ma60.iloc[-1]),
+    "Above MA200": bool(current > ma200.iloc[-1]),
+    "MA60 Above MA200": bool(ma60.iloc[-1] > ma200.iloc[-1]),
+    "BIAS20": (current - ma20.iloc[-1]) / ma20.iloc[-1] * 100,
+    "RSI14": rrsi.iloc[-1],
+    "MACD": macd.iloc[-1],
+    "MACD Signal": macd_signal.iloc[-1],
+    "MACD Hist": macd_hist.iloc[-1],
+    "BB Upper": bb_upper.iloc[-1],
+    "BB Mid": bb_mid.iloc[-1],
+    "BB Lower": bb_lower.iloc[-1],
+    "Avg Volume20": avgvol20.iloc[-1],
+    "Volume Ratio": volume.iloc[-1] / avgvol20.iloc[-1] if avgvol20.iloc[-1] else np.nan,
+    "1M Return": ret(21),
+    "3M Return": ret(63),
+    "6M Return": ret(126),
+  }
 
 def get_fundamentals(ticker: str) -> dict:
     """基本面缺值一律回 N/A，不讓單一股票拖垮掃描。"""
