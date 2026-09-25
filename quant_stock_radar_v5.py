@@ -270,8 +270,24 @@ def score_row(row: dict) -> dict:
     if row["MA60 Above MA200"]: trend += 6
 
     momentum = 0.0
-    for key, pts in [("3M Return", 6), ("6M Return", 6), ("Relative Strength 3M", 4), ("Relative Strength 6M", 4)]:
-        if pd.notna(row.get(key)) and row[key] > 0: momentum += pts
+
+# 價格動能：12分
+for key, pts in (("3M Return", 4), ("6M Return", 4),
+                 ("Relative Strength 3M", 2), ("Relative Strength 6M", 2)):
+    if pd.notna(row.get(key)) and row[key] > 0:
+        momentum += pts
+
+# MACD：8分
+macd = row.get("MACD")
+macd_signal = row.get("MACD Signal")
+macd_hist = row.get("MACD Hist")
+
+if pd.notna(macd) and pd.notna(macd_signal):
+    if macd > macd_signal:
+        momentum += 5
+
+if pd.notna(macd_hist) and macd_hist > 0:
+    momentum += 3
 
     pe = row.get("P/E")
     if pd.isna(pe): valuation = 5.0
@@ -281,18 +297,34 @@ def score_row(row: dict) -> dict:
     else: valuation = 0.0
 
     fundamental = 0.0
-    for key, pts in [("Revenue Growth",7),("EPS Growth",7),("ROE",6),("Free Cash Flow",5)]:
+    for key, pts in (("Revenue Growth",6),("EPS Growth",6),("ROE",5),("Free Cash Flow",3)):
         v = row.get(key)
         if pd.notna(v) and v > 0: fundamental += pts
 
     vr = row.get("Volume Ratio")
     volume_score = 10.0 if pd.notna(vr) and vr >= CFG.volume_ratio_bonus else (5.0 if pd.notna(vr) and vr >= 0.8 else 0.0)
 
-    bias, rrsi = row.get("BIAS20"), row.get("RSI14")
-    entry = 0.0
-    if pd.notna(bias) and CFG.bias_min <= bias <= CFG.bias_max: entry += 3
-    if pd.notna(rrsi) and 30 <= rrsi <= 70: entry += 2
+    # Entry Score：10分
+bias = row.get("BIAS20")
+rrsi = row.get("RSI14")
+price = row.get("Latest Price")
+bb_mid = row.get("BB Mid")
+bb_lower = row.get("BB Lower")
 
+entry = 0.0
+
+# BIAS20：3分
+if pd.notna(bias) and CFG.bias_min <= bias <= CFG.bias_max:
+    entry += 3
+
+# RSI：2分
+if pd.notna(rrsi) and 30 <= rrsi <= 70:
+    entry += 2
+
+# Bollinger Bands：5分
+if pd.notna(price) and pd.notna(bb_mid) and pd.notna(bb_lower):
+    if bb_lower <= price <= bb_mid:
+        entry += 5
     return {"Trend Score": trend, "Momentum Score": momentum, "Valuation Score": valuation,
             "Fundamental Score": fundamental, "Volume Score": volume_score, "Entry Score": entry,
             "Total Score": trend + momentum + valuation + fundamental + volume_score + entry}
