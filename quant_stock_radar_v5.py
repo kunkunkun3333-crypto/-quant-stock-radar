@@ -203,7 +203,7 @@ bb_mid = close.rolling(20).mean()
 bb_std = close.rolling(20).std()
 bb_upper = bb_mid + (2 * bb_std)
 bb_lower = bb_mid - (2 * bb_std)
-
+# Re-run syntax test
 current = close.iloc[-1]
 ret = lambda n: (current / close.iloc[-(n+1)] - 1) * 100 if len(close) > n else np.nan
 return {
