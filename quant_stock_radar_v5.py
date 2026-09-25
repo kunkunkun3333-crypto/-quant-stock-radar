@@ -205,8 +205,8 @@ bb_upper = bb_mid + (2 * bb_std)
 bb_lower = bb_mid - (2 * bb_std)
 
 current = close.iloc[-1]
-    ret = lambda n: (current / close.iloc[-(n+1)] - 1) * 100 if len(close) > n else np.nan
-    return {
+ret = lambda n: (current / close.iloc[-(n+1)] - 1) * 100 if len(close) > n else np.nan
+return {
         "Latest Price": current,
         "MA20": ma20.iloc[-1], "MA60": ma60.iloc[-1], "MA200": ma200.iloc[-1],
         "Golden Cross": bool(ma20.iloc[-2] <= ma60.iloc[-2] and ma20.iloc[-1] > ma60.iloc[-1]),
