@@ -184,26 +184,28 @@ def rsi(series: pd.Series, period: int = 14) -> pd.Series:
 
 
 def indicators(df: pd.DataFrame) -> dict:
-    close = df["Close"].astype(float)
-    volume = df["Volume"].astype(float) if "Volume" in df else pd.Series(index=df.index, dtype=float)
-    ma20 = close.rolling(CFG.ma_short).mean()
-    ma60 = close.rolling(CFG.ma_long).mean()
-    ma200 = close.rolling(CFG.ma_trend).mean()
-    rrsi = rsi(close, CFG.rsi_period)
-    avgvol20 = volume.rolling(20).mean()
-# MACD (12, 26, 9)
-ema12 = close.ewm(span=12, adjust=False).mean()
-ema26 = close.ewm(span=26, adjust=False).mean()
-macd = ema12 - ema26
-macd_signal = macd.ewm(span=9, adjust=False).mean()
-macd_hist = macd - macd_signal
+  close = df["Close"].astype(float)
+  volume = df["Volume"].astype(float) if "Volume" in df else pd.Series(index=df.index, dtype=float)
 
-# Bollinger Bands (20, 2)
-bb_mid = close.rolling(20).mean()
-bb_std = close.rolling(20).std()
-bb_upper = bb_mid + (2 * bb_std)
-bb_lower = bb_mid - (2 * bb_std)
-# Re-run syntax test
+  ma20 = close.rolling(CFG.ma_short).mean()
+  ma60 = close.rolling(CFG.ma_long).mean()
+  ma200 = close.rolling(CFG.ma_trend).mean()
+  rrsi = rsi(close, CFG.rsi_period)
+  avgvol20 = volume.rolling(20).mean()
+
+  # MACD (12, 26, 9)
+  ema12 = close.ewm(span=12, adjust=False).mean()
+  ema26 = close.ewm(span=26, adjust=False).mean()
+  macd = ema12 - ema26
+  macd_signal = macd.ewm(span=9, adjust=False).mean()
+  macd_hist = macd - macd_signal
+
+  # Bollinger Bands (20, 2)
+  bb_mid = close.rolling(20).mean()
+  bb_std = close.rolling(20).std()
+  bb_upper = bb_mid + (2 * bb_std)
+  bb_lower = bb_mid - (2 * bb_std)
+
   current = close.iloc[-1]
   ret = lambda n: (current / close.iloc[-(n+1)] - 1) * 100 if len(close) > n else np.nan
 
@@ -228,11 +230,7 @@ bb_lower = bb_mid - (2 * bb_std)
     "1M Return": ret(21),
     "3M Return": ret(63),
     "6M Return": ret(126),
-  }
-
-def get_fundamentals(ticker: str) -> dict:
-    """基本面缺值一律回 N/A，不讓單一股票拖垮掃描。"""
-    result = {"Company Name": ticker, "Market Cap": np.nan, "P/E": np.nan,
+     }    result = {"Company Name": ticker, "Market Cap": np.nan, "P/E": np.nan,
               "Revenue Growth": np.nan, "EPS Growth": np.nan, "ROE": np.nan,
               "Free Cash Flow": np.nan, "Debt To Equity": np.nan}
     for attempt in range(CFG.retry_count):
