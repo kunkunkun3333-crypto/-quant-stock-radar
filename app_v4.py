@@ -2,11 +2,16 @@ from __future__ import annotations
 import pandas as pd
 import numpy as np
 import streamlit as st
-import quant_stock_radar_v4 as qr
+import quant_stock_radar_v5 as qr
 
-st.set_page_config(page_title='台美股量化雷達 V4', page_icon='📊', layout='wide')
-st.title('📊 台美股量化選股雷達 V4')
+st.set_page_config(page_title='台美股量化雷達 V5', page_icon='📊', layout='wide')
+st.title('📊 台美股量化選股雷達 V5')
 st.caption('掃描器 × 個股儀表板 × 價格/均線圖 × 基本面視覺化 × 回測｜研究工具，不構成投資建議')
+
+# 舊版掃描結果不可混用 V5 評分。
+if st.session_state.get('engine_version') != 'V5':
+    st.session_state.pop('results', None)
+    st.session_state['engine_version'] = 'V5'
 
 with st.sidebar:
     st.header('策略設定')
@@ -26,11 +31,11 @@ with st.sidebar:
     backtest_top = st.slider('回測前 N 名', 0, 20, 5)
 
 st.subheader('股票池')
-st.caption('V4 預設自動擴充股票池；若上傳 CSV，則以你上傳的清單優先。第一次掃描較久，且 Yahoo Finance 可能有流量限制。')
+st.caption('V5 預設自動擴充股票池；若上傳 CSV，則以你上傳的清單優先。第一次掃描較久，且 Yahoo Finance 可能有流量限制。')
 c1, c2 = st.columns(2)
 with c1:
     us_upload = st.file_uploader('美股股票池 CSV（ticker / symbol / code）', type='csv', key='us')
-    st.caption('未上傳時使用內建示範股票池。')
+    st.caption('未上傳時依左側股票池模式取得清單。')
 with c2:
     tw_upload = st.file_uploader('台股股票池 CSV（ticker / symbol / code）', type='csv', key='tw')
     st.caption('台股可填 2330，程式會嘗試 .TW / .TWO。')
@@ -113,4 +118,4 @@ if 'results' in st.session_state:
     d1.download_button('⬇️ 下載完整結果 CSV',df.to_csv(index=False).encode('utf-8-sig'),'quant_stock_all_results.csv','text/csv',use_container_width=True)
     d2.download_button('⬇️ 下載核心候選 CSV',picks.to_csv(index=False).encode('utf-8-sig'),'quant_stock_picks.csv','text/csv',use_container_width=True)
 
-st.divider(); st.caption('V4｜自動股票池 × yfinance 資料可能延遲、缺漏或受來源限制；歷史績效不代表未來結果。')
+st.divider(); st.caption('V5｜自動股票池 × yfinance 資料可能延遲、缺漏或受來源限制；歷史績效不代表未來結果。')
