@@ -1,4 +1,4 @@
-"""台美股量化選股與策略雷達 V4
+"""台美股量化選股與策略雷達 V5
 研究用途，不構成投資建議。
 
 使用方式：
@@ -45,9 +45,9 @@ class Config:
         "trend": 25,
         "momentum": 20,
         "valuation": 15,
-        "fundamental": 25,
+        "fundamental": 20,
         "volume": 10,
-        "entry": 5,
+        "entry": 10,
     })
 
 CFG = Config()
@@ -184,53 +184,57 @@ def rsi(series: pd.Series, period: int = 14) -> pd.Series:
 
 
 def indicators(df: pd.DataFrame) -> dict:
-  close = df["Close"].astype(float)
-  volume = df["Volume"].astype(float) if "Volume" in df else pd.Series(index=df.index, dtype=float)
+    close = df["Close"].astype(float)
+    volume = df["Volume"].astype(float) if "Volume" in df else pd.Series(index=df.index, dtype=float)
 
-  ma20 = close.rolling(CFG.ma_short).mean()
-  ma60 = close.rolling(CFG.ma_long).mean()
-  ma200 = close.rolling(CFG.ma_trend).mean()
-  rrsi = rsi(close, CFG.rsi_period)
-  avgvol20 = volume.rolling(20).mean()
+    ma20 = close.rolling(CFG.ma_short).mean()
+    ma60 = close.rolling(CFG.ma_long).mean()
+    ma200 = close.rolling(CFG.ma_trend).mean()
+    rrsi = rsi(close, CFG.rsi_period)
+    avgvol20 = volume.rolling(20).mean()
 
-  # MACD (12, 26, 9)
-  ema12 = close.ewm(span=12, adjust=False).mean()
-  ema26 = close.ewm(span=26, adjust=False).mean()
-  macd = ema12 - ema26
-  macd_signal = macd.ewm(span=9, adjust=False).mean()
-  macd_hist = macd - macd_signal
+    # MACD (12, 26, 9)
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    macd = ema12 - ema26
+    macd_signal = macd.ewm(span=9, adjust=False).mean()
+    macd_hist = macd - macd_signal
 
-  # Bollinger Bands (20, 2)
-  bb_mid = close.rolling(20).mean()
-  bb_std = close.rolling(20).std()
-  bb_upper = bb_mid + (2 * bb_std)
-  bb_lower = bb_mid - (2 * bb_std)
+    # Bollinger Bands (20, 2)
+    bb_mid = close.rolling(20).mean()
+    bb_std = close.rolling(20).std()
+    bb_upper = bb_mid + (2 * bb_std)
+    bb_lower = bb_mid - (2 * bb_std)
 
-  current = close.iloc[-1]
-  ret = lambda n: (current / close.iloc[-(n+1)] - 1) * 100 if len(close) > n else np.nan
+    current = close.iloc[-1]
+    ret = lambda n: (current / close.iloc[-(n+1)] - 1) * 100 if len(close) > n else np.nan
 
-  return {
-    "Latest Price": current,
-    "MA20": ma20.iloc[-1],
-    "MA60": ma60.iloc[-1],
-    "MA200": ma200.iloc[-1],
-    "Golden Cross": bool(ma20.iloc[-2] <= ma60.iloc[-2] and ma20.iloc[-1] > ma60.iloc[-1]),
-    "Above MA200": bool(current > ma200.iloc[-1]),
-    "MA60 Above MA200": bool(ma60.iloc[-1] > ma200.iloc[-1]),
-    "BIAS20": (current - ma20.iloc[-1]) / ma20.iloc[-1] * 100,
-    "RSI14": rrsi.iloc[-1],
-    "MACD": macd.iloc[-1],
-    "MACD Signal": macd_signal.iloc[-1],
-    "MACD Hist": macd_hist.iloc[-1],
-    "BB Upper": bb_upper.iloc[-1],
-    "BB Mid": bb_mid.iloc[-1],
-    "BB Lower": bb_lower.iloc[-1],
-    "Avg Volume20": avgvol20.iloc[-1],
-    "Volume Ratio": volume.iloc[-1] / avgvol20.iloc[-1] if avgvol20.iloc[-1] else np.nan,
-    "1M Return": ret(21),
-    "3M Return": ret(63),
-    "6M Return": ret(126),
-     }    result = {"Company Name": ticker, "Market Cap": np.nan, "P/E": np.nan,
+    return {
+      "Latest Price": current,
+      "MA20": ma20.iloc[-1],
+      "MA60": ma60.iloc[-1],
+      "MA200": ma200.iloc[-1],
+      "Golden Cross": bool(ma20.iloc[-2] <= ma60.iloc[-2] and ma20.iloc[-1] > ma60.iloc[-1]),
+      "Above MA200": bool(current > ma200.iloc[-1]),
+      "MA60 Above MA200": bool(ma60.iloc[-1] > ma200.iloc[-1]),
+      "BIAS20": (current - ma20.iloc[-1]) / ma20.iloc[-1] * 100,
+      "RSI14": rrsi.iloc[-1],
+      "MACD": macd.iloc[-1],
+      "MACD Signal": macd_signal.iloc[-1],
+      "MACD Hist": macd_hist.iloc[-1],
+      "BB Upper": bb_upper.iloc[-1],
+      "BB Mid": bb_mid.iloc[-1],
+      "BB Lower": bb_lower.iloc[-1],
+      "Avg Volume20": avgvol20.iloc[-1],
+      "Volume Ratio": volume.iloc[-1] / avgvol20.iloc[-1] if avgvol20.iloc[-1] else np.nan,
+      "1M Return": ret(21),
+      "3M Return": ret(63),
+      "6M Return": ret(126),
+    }
+
+def get_fundamentals(ticker: str) -> dict:
+    """基本面缺值一律回 N/A，不讓單一股票拖垮掃描。"""
+    result = {"Company Name": ticker, "Market Cap": np.nan, "P/E": np.nan,
               "Revenue Growth": np.nan, "EPS Growth": np.nan, "ROE": np.nan,
               "Free Cash Flow": np.nan, "Debt To Equity": np.nan}
     for attempt in range(CFG.retry_count):
@@ -273,23 +277,23 @@ def score_row(row: dict) -> dict:
 
     momentum = 0.0
 
-# 價格動能：12分
-for key, pts in (("3M Return", 4), ("6M Return", 4),
-                 ("Relative Strength 3M", 2), ("Relative Strength 6M", 2)):
-    if pd.notna(row.get(key)) and row[key] > 0:
-        momentum += pts
+    # 價格動能：12分
+    for key, pts in (("3M Return", 4), ("6M Return", 4),
+                     ("Relative Strength 3M", 2), ("Relative Strength 6M", 2)):
+        if pd.notna(row.get(key)) and row[key] > 0:
+            momentum += pts
 
-# MACD：8分
-macd = row.get("MACD")
-macd_signal = row.get("MACD Signal")
-macd_hist = row.get("MACD Hist")
+    # MACD：8分
+    macd = row.get("MACD")
+    macd_signal = row.get("MACD Signal")
+    macd_hist = row.get("MACD Hist")
 
-if pd.notna(macd) and pd.notna(macd_signal):
-    if macd > macd_signal:
-        momentum += 5
+    if pd.notna(macd) and pd.notna(macd_signal):
+        if macd > macd_signal:
+            momentum += 5
 
-if pd.notna(macd_hist) and macd_hist > 0:
-    momentum += 3
+    if pd.notna(macd_hist) and macd_hist > 0:
+        momentum += 3
 
     pe = row.get("P/E")
     if pd.isna(pe): valuation = 5.0
@@ -307,26 +311,26 @@ if pd.notna(macd_hist) and macd_hist > 0:
     volume_score = 10.0 if pd.notna(vr) and vr >= CFG.volume_ratio_bonus else (5.0 if pd.notna(vr) and vr >= 0.8 else 0.0)
 
     # Entry Score：10分
-bias = row.get("BIAS20")
-rrsi = row.get("RSI14")
-price = row.get("Latest Price")
-bb_mid = row.get("BB Mid")
-bb_lower = row.get("BB Lower")
+    bias = row.get("BIAS20")
+    rrsi = row.get("RSI14")
+    price = row.get("Latest Price")
+    bb_mid = row.get("BB Mid")
+    bb_lower = row.get("BB Lower")
 
-entry = 0.0
+    entry = 0.0
 
-# BIAS20：3分
-if pd.notna(bias) and CFG.bias_min <= bias <= CFG.bias_max:
-    entry += 3
+    # BIAS20：3分
+    if pd.notna(bias) and CFG.bias_min <= bias <= CFG.bias_max:
+        entry += 3
 
-# RSI：2分
-if pd.notna(rrsi) and 30 <= rrsi <= 70:
-    entry += 2
+    # RSI：2分
+    if pd.notna(rrsi) and 30 <= rrsi <= 70:
+        entry += 2
 
-# Bollinger Bands：5分
-if pd.notna(price) and pd.notna(bb_mid) and pd.notna(bb_lower):
-    if bb_lower <= price <= bb_mid:
-        entry += 5
+    # Bollinger Bands：5分
+    if pd.notna(price) and pd.notna(bb_mid) and pd.notna(bb_lower):
+        if bb_lower <= price <= bb_mid:
+            entry += 5
     return {"Trend Score": trend, "Momentum Score": momentum, "Valuation Score": valuation,
             "Fundamental Score": fundamental, "Volume Score": volume_score, "Entry Score": entry,
             "Total Score": trend + momentum + valuation + fundamental + volume_score + entry}
@@ -408,7 +412,7 @@ def backtest_ticker(ticker: str) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="台美股量化選股與策略雷達 V4")
+    parser = argparse.ArgumentParser(description="台美股量化選股與策略雷達 V5")
     parser.add_argument("--us-file", help="美股股票池 CSV，需含 ticker/symbol/code 欄")
     parser.add_argument("--tw-file", help="台股股票池 CSV，需含 ticker/symbol/code 欄")
     parser.add_argument("--backtest-top", type=int, default=10, help="對總分前 N 名執行簡易回測")
