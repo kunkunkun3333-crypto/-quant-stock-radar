@@ -1,4 +1,4 @@
-"""台美股量化選股與策略雷達 V5
+"""台美股量化選股與策略雷達 V5.1
 研究用途，不構成投資建議。
 
 使用方式：
@@ -146,9 +146,9 @@ def load_tickers(path: Optional[str], market: str) -> list[str]:
 
 def download_history(ticker: str) -> tuple[str, pd.DataFrame]:
     candidates = [ticker]
-    if ticker.endswith(".TW"):
+    if ticker.endswith(".TW") and not getattr(CFG, "strict_exchange", False):
         candidates.append(ticker[:-3] + ".TWO")
-    elif ticker.endswith(".TWO"):
+    elif ticker.endswith(".TWO") and not getattr(CFG, "strict_exchange", False):
         candidates.append(ticker[:-4] + ".TW")
 
     last_error = None
@@ -211,6 +211,7 @@ def indicators(df: pd.DataFrame) -> dict:
 
     return {
       "Latest Price": current,
+        "Price Date": str(df.index[-1].date()),
       "MA20": ma20.iloc[-1],
       "MA60": ma60.iloc[-1],
       "MA200": ma200.iloc[-1],
@@ -345,7 +346,7 @@ def risk_flags(row: dict) -> str:
     return "、".join(flags) if flags else "-"
 
 
-def screen_market(tickers: list[str], market: str, benchmarks: dict[str, dict]) -> list[dict]:
+def screen_market(tickers: list[str], market: str, benchmarks: dict[str, dict], audit=None, progress=None) -> list[dict]:
     rows = []
     for i, raw in enumerate(tickers, 1):
         log.info("[%s %d/%d] %s", market, i, len(tickers), raw)
@@ -362,8 +363,10 @@ def screen_market(tickers: list[str], market: str, benchmarks: dict[str, dict]) 
 
             # 股票池門檻
             if market == "US" and pd.notna(row["Market Cap"]) and row["Market Cap"] < CFG.us_min_market_cap:
+                if audit is not None: audit.append({"Ticker": raw, "Market": market, "狀態": "條件排除", "原因": "市值低於門檻"})
                 continue
             if market == "TW" and pd.notna(row["Avg Volume20"]) and row["Avg Volume20"] < CFG.tw_min_avg_volume_lots * 1000:
+                if audit is not None: audit.append({"Ticker": raw, "Market": market, "狀態": "條件排除", "原因": "成交量低於門檻"})
                 continue
 
             row.update(score_row(row))
@@ -375,8 +378,12 @@ def screen_market(tickers: list[str], market: str, benchmarks: dict[str, dict]) 
                 (pd.isna(row["P/E"]) or (0 < row["P/E"] < CFG.pe_max))
             )
             rows.append(row)
+            if audit is not None: audit.append({"Ticker": raw, "Market": market, "狀態": "成功分析", "原因": ""})
         except Exception as exc:
             log.error("%s 跳過：%s", raw, exc)
+            if audit is not None: audit.append({"Ticker": raw, "Market": market, "狀態": "資料失敗", "原因": str(exc)})
+        finally:
+            if progress is not None: progress(i, len(tickers), raw)
         time.sleep(CFG.request_pause_seconds)
     return rows
 
@@ -412,7 +419,7 @@ def backtest_ticker(ticker: str) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="台美股量化選股與策略雷達 V5")
+    parser = argparse.ArgumentParser(description="台美股量化選股與策略雷達 V5.1")
     parser.add_argument("--us-file", help="美股股票池 CSV，需含 ticker/symbol/code 欄")
     parser.add_argument("--tw-file", help="台股股票池 CSV，需含 ticker/symbol/code 欄")
     parser.add_argument("--backtest-top", type=int, default=10, help="對總分前 N 名執行簡易回測")
