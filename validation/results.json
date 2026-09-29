@@ -1,0 +1,45 @@
+{
+  "date": "2026-09-28",
+  "status": "candidate-not-production-accepted",
+  "baseline": "5d18083",
+  "python": "3.12.14",
+  "dependencies": {
+    "streamlit": "1.64.0",
+    "yfinance": "0.2.66",
+    "pandas": "2.2.3",
+    "numpy": "2.3.5",
+    "requests": "2.34.2"
+  },
+  "v52_tests": {
+    "passed": 22,
+    "failed": 0
+  },
+  "v51_regression": {
+    "passed": 5,
+    "failed": 0
+  },
+  "http_health": "ok",
+  "real_data_check": {
+    "catalog_total": 1988,
+    "tech_total": 912,
+    "symbols_present": {
+      "2330.TW": true,
+      "2317.TW": true,
+      "2454.TW": true,
+      "2408.TW": true,
+      "2344.TW": true,
+      "2337.TW": true,
+      "6488.TWO": true,
+      "8299.TWO": true,
+      "2881.TW": true,
+      "2412.TW": true
+    },
+    "history_error": "Yahoo行情下載失敗／可能限流：未回傳有效行情"
+  },
+  "synthetic_fixture_count": 10,
+  "synthetic_total_min": 21.48,
+  "synthetic_total_max": 84.19,
+  "live_ten_stock_scores_verified": false,
+  "cloud_deployed": false,
+  "full_factor_backtest_validated": false
+}

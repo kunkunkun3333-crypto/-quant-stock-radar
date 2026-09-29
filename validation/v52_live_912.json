@@ -1,0 +1,53 @@
+{
+  "observed_at_utc": "2026-09-28T19:01:45.564555+00:00",
+  "mode": "live",
+  "real_market_data": true,
+  "cloud_measurement": false,
+  "roster_count": 1988,
+  "tech_count": 912,
+  "benchmark_error": "^TWII: 來源冷卻中，約1715秒後可重試：已觀察到YFRateLimitError，修復持久化後保留30分鐘冷卻",
+  "scan": {
+    "elapsed_seconds": 0.258,
+    "attempted": 912,
+    "analyzed": 0,
+    "failed": 912,
+    "peak_rss_mb": 151.37,
+    "history_bytes_mb": 0.0,
+    "score_min": null,
+    "score_max": null,
+    "all_scores_finite": null,
+    "failure_examples": [
+      {
+        "Ticker": "1471.TW",
+        "狀態": "資料失敗",
+        "原因": "1471.TW: 來源冷卻中，約1715秒後可重試：已觀察到YFRateLimitError，修復持久化後保留30分鐘冷卻；1582.TW: 來源冷卻中，約1715秒後可重試：已觀察到YFRateLimitError，修復持久化後保留30分鐘冷卻"
+      },
+      {
+        "Ticker": "1582.TW",
+        "狀態": "資料失敗",
+        "原因": "1471.TW: 來源冷卻中，約1715秒後可重試：已觀察到YFRateLimitError，修復持久化後保留30分鐘冷卻；1582.TW: 來源冷卻中，約1715秒後可重試：已觀察到YFRateLimitError，修復持久化後保留30分鐘冷卻"
+      }
+    ]
+  },
+  "network_calls_this_run": 0,
+  "cache": {
+    "cache_entries": 1,
+    "disk_mb": 0.02,
+    "metrics": {
+      "network_calls": 0,
+      "fresh_hits": 0,
+      "stale_hits": 0,
+      "blocked": 913,
+      "errors": 0
+    },
+    "providers": {
+      "yahoo": {
+        "last_request": 1790622038.7004037,
+        "until": 1790623838.700404,
+        "failures": 1,
+        "reason": "已觀察到YFRateLimitError，修復持久化後保留30分鐘冷卻"
+      }
+    }
+  },
+  "accepted": false
+}

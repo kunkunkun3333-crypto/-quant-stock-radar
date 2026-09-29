@@ -1,0 +1,31 @@
+{
+  "observed_at_utc": "2026-09-28T19:01:44.565101+00:00",
+  "mode": "synthetic",
+  "real_market_data": false,
+  "cloud_measurement": false,
+  "fixture_prepare_seconds": 39.464,
+  "warm_scan": {
+    "elapsed_seconds": 55.055,
+    "attempted": 912,
+    "analyzed": 912,
+    "failed": 0,
+    "peak_rss_mb": 347.8,
+    "history_bytes_mb": 162.69,
+    "score_min": 26.97478545731321,
+    "score_max": 77.22393691342015,
+    "all_scores_finite": true,
+    "failure_examples": []
+  },
+  "cache": {
+    "cache_entries": 1824,
+    "disk_mb": 64.96,
+    "metrics": {
+      "network_calls": 0,
+      "fresh_hits": 1824,
+      "stale_hits": 0,
+      "blocked": 0,
+      "errors": 0
+    },
+    "providers": {}
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "observed_at_utc": "2026-09-29T13:38:05.799654+00:00",
+  "mode": "live",
+  "real_market_data": true,
+  "cloud_measurement": false,
+  "roster_count": 1988,
+  "tech_count": 912,
+  "benchmark_error": "^TWII: 來源冷卻中，約1733秒後可重試：YFRateLimitError: Too Many Requests. Rate limited. Try after a while.",
+  "scan": {
+    "elapsed_seconds": 0.219,
+    "attempted": 912,
+    "analyzed": 0,
+    "failed": 912,
+    "peak_rss_mb": 149.41,
+    "history_bytes_mb": 0.0,
+    "score_min": null,
+    "score_max": null,
+    "all_scores_finite": null,
+    "failure_examples": [
+      {
+        "Ticker": "1471.TW",
+        "狀態": "資料失敗",
+        "原因": "來源冷卻中，約1733秒後可重試：YFRateLimitError: Too Many Requests. Rate limited. Try after a while."
+      },
+      {
+        "Ticker": "1582.TW",
+        "狀態": "資料失敗",
+        "原因": "來源冷卻中，約1733秒後可重試：YFRateLimitError: Too Many Requests. Rate limited. Try after a while."
+      }
+    ]
+  },
+  "network_calls_this_run": 0,
+  "cache": {
+    "cache_entries": 2,
+    "disk_mb": 0.04,
+    "metrics": {
+      "network_calls": 0,
+      "fresh_hits": 0,
+      "stale_hits": 0,
+      "blocked": 913,
+      "errors": 0
+    },
+    "providers": {
+      "twse_quotes": {
+        "last_request": 1790622199.4854584,
+        "failures": 1,
+        "until": 1790622204.5017135,
+        "reason": "ReadTimeout: HTTPSConnectionPool(host='openapi.twse.com.tw', port=443): Read timed out. (read timeout=5)"
+      },
+      "twse_pe": {
+        "last_request": 1790622204.502733,
+        "failures": 0,
+        "until": 0,
+        "reason": ""
+      },
+      "tpex_quotes": {
+        "last_request": 1790622206.2392395,
+        "failures": 1,
+        "until": 1790622211.2457595,
+        "reason": "ReadTimeout: HTTPSConnectionPool(host='www.tpex.org.tw', port=443): Read timed out. (read timeout=5)"
+      },
+      "tpex_pe": {
+        "last_request": 1790622211.2467823,
+        "failures": 1,
+        "until": 1790622219.2424352,
+        "reason": "HTTPError: 520 Server Error: <none> for url: https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis"
+      },
+      "yahoo": {
+        "last_request": 1790689036.5421176,
+        "until": 1790690862.3985634,
+        "failures": 2,
+        "reason": "YFRateLimitError: Too Many Requests. Rate limited. Try after a while."
+      }
+    }
+  },
+  "accepted": false
+}

@@ -1,0 +1,35 @@
+{
+  "test": "official snapshots only, not historical technical analysis",
+  "elapsed_seconds": 19.768,
+  "rows": 1081,
+  "sources": [
+    {
+      "來源": "twse_quotes",
+      "資料筆數": 0,
+      "快取": "N/A",
+      "原因": "ReadTimeout: HTTPSConnectionPool(host='openapi.twse.com.tw', port=443): Read timed out. (read timeout=5)",
+      "擷取時間UTC": null
+    },
+    {
+      "來源": "twse_pe",
+      "資料筆數": 1081,
+      "快取": "downloaded",
+      "原因": "",
+      "擷取時間UTC": "2026-09-28T19:03:26.230312+00:00"
+    },
+    {
+      "來源": "tpex_quotes",
+      "資料筆數": 0,
+      "快取": "N/A",
+      "原因": "ReadTimeout: HTTPSConnectionPool(host='www.tpex.org.tw', port=443): Read timed out. (read timeout=5)",
+      "擷取時間UTC": null
+    },
+    {
+      "來源": "tpex_pe",
+      "資料筆數": 0,
+      "快取": "N/A",
+      "原因": "HTTPError: 520 Server Error: <none> for url: https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis",
+      "擷取時間UTC": null
+    }
+  ]
+}
