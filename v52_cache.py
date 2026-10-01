@@ -21,6 +21,9 @@ def network_budget(seconds):
     finally:_DEADLINE.reset(token)
 
 class DataUnavailable(RuntimeError):pass
+class InvalidMarketData(ValueError):
+    """單一標的資料不合格，不能據此判定整個來源故障。"""
+    pass
 @dataclass
 class Cached:
     value: object
@@ -87,9 +90,13 @@ class Store:
                 self.metrics['fresh_hits']+=1
                 return Cached(cached.value,'fresh',cached.fetched_at)
             state=self._state(provider);failure=self._state('failure:'+key)
-            until=max(state.get('until',0),failure.get('until',0))
+            provider_until=state.get('until',0)
+            until=max(provider_until,failure.get('until',0))
             if until>now:
-                return self._fallback(cached,max_stale,f"來源冷卻中，約{int(until-now)}秒後可重試：{state.get('reason') or failure.get('reason') or '暫時失敗'}")
+                source_blocked=provider_until>now
+                label='來源冷卻中（本次未重新抓取此標的）' if source_blocked else '此標的暫停重試'
+                reason=state.get('reason') if source_blocked else failure.get('reason')
+                return self._fallback(cached,max_stale,f"{label}，約{int(until-now)}秒後可重試：{reason or '暫時失敗'}")
             deadline=_DEADLINE.get()
             if deadline is not None and time.monotonic()>=deadline:
                 return self._fallback(cached,max_stale,'本輪網路時間預算已用完；再次掃描會沿用快取並續抓缺項')
@@ -106,6 +113,9 @@ class Store:
             except Exception as exc:
                 self.metrics['errors']+=1
                 reason=type(exc).__name__+': '+str(exc)
+                if isinstance(exc,InvalidMarketData):
+                    self._set_state('failure:'+key,{'until':self.clock()+300,'reason':reason})
+                    return self._fallback(cached,max_stale,reason)
                 count=state.get('failures',0)+1
                 cooldown=self.cooldown if is_rate_limit(exc) else 300 if count>=3 else 0
                 self._set_state(provider,{**state,'failures':count,'until':self.clock()+cooldown,'reason':reason})

@@ -30,7 +30,10 @@ def clean_history(hist):
         h[k]=pd.to_numeric(h[k],errors='coerce') if k in h else np.nan
     h=h.replace([np.inf,-np.inf],np.nan)
     # 缺損日不刪掉，避免把5交易日偷偷變成5個非缺值資料點。
-    if h.Close.isna().any() or (h.Close<=0).any(): raise ValueError('收盤序列含缺值或非正數，不能可靠計算交易日期')
+    invalid=h.Close.isna()|(h.Close<=0)
+    if invalid.any():
+        dates=', '.join(str(d.date()) for d in h.index[invalid][:5])
+        raise ValueError(f'收盤序列含缺值或非正數，共{int(invalid.sum())}/{len(h)}筆；日期示例：{dates}；不能可靠計算交易日期，未補值或刪除缺損日')
     h.loc[h.Volume<0,'Volume']=np.nan
     for col in ['Open','High','Low']: h.loc[h[col]<=0,col]=np.nan
     bad=(h.High<h.Low)|(h.High<h.Close)|(h.Low>h.Close)

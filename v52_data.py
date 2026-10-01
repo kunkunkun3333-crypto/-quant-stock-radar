@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 from v52_config import DEFAULT
-from v52_cache import get_store, network_budget, DataUnavailable
+from v52_cache import get_store, network_budget, DataUnavailable, InvalidMarketData
 from v52_engine import features,number,phase_a,regime,institutional_flow
 from v52_backtest import backtest,align_benchmark
 from v51_support import fetch_catalog,INDUSTRIES
@@ -42,9 +42,10 @@ def _load_history(ticker,period):
         yf.config.network.retries=0;yf.config.debug.hide_exceptions=False
     raw=yf.Ticker(ticker).history(period=period,interval='1d',auto_adjust=True,repair=False,keepna=True,timeout=12)
     h=extract_history(raw,ticker)
-    if h.empty:raise ValueError('未取得有效行情')
+    if h.empty:raise InvalidMarketData(f'{ticker}：未取得有效行情')
     from v52_engine import clean_history
-    return clean_history(h)
+    try:return clean_history(h)
+    except ValueError as exc:raise InvalidMarketData(f'{ticker}：{exc}') from exc
 
 class HistoryBatch(dict):
     def __init__(self):super().__init__();self.errors={}
@@ -66,7 +67,7 @@ def history_batch(tickers,period='10y'):
 def _load_fundamentals(ticker):
     if hasattr(yf,'config'):yf.config.network.retries=0;yf.config.debug.hide_exceptions=False
     info=yf.Ticker(ticker).info or {}
-    if not info or not any(k in info for k in ['trailingEps','trailingPE','returnOnEquity','revenueGrowth','marketCap']):raise ValueError('基本面未回傳有效欄位')
+    if not info or not any(k in info for k in ['trailingEps','trailingPE','returnOnEquity','revenueGrowth','marketCap']):raise InvalidMarketData(f'{ticker}：基本面未回傳有效欄位')
     mapping={'EPS':'trailingEps','P/E':'trailingPE','Revenue Growth':'revenueGrowth','Earnings Growth':'earningsGrowth','ROE':'returnOnEquity','Gross Margin':'grossMargins','Operating Margin':'operatingMargins','Free Cash Flow':'freeCashflow','Market Cap':'marketCap','Debt To Equity':'debtToEquity'}
     out={k:number(info.get(v)) for k,v in mapping.items()}
     if out['P/E'] is not None and out['P/E']<=0:out['P/E']=None

@@ -3,7 +3,7 @@ from pathlib import Path
 from unittest.mock import Mock,patch
 from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
-from v52_cache import Store,DataUnavailable,network_budget
+from v52_cache import Store,DataUnavailable,InvalidMarketData,network_budget
 import v52_data as data
 from test_integration import synthetic
 
@@ -55,6 +55,21 @@ class CacheTests(unittest.TestCase):
         for i in range(10):
             with self.assertRaises(DataUnavailable):self.store.get('yahoo',str(i),loader,60)
         self.assertEqual(loader.call_count,3)
+    def test_invalid_symbols_do_not_block_healthy_symbol_or_restart(self):
+        for i in range(4):
+            with self.assertRaises(DataUnavailable):
+                self.store.get('yahoo',f'bad:{i}',Mock(side_effect=InvalidMarketData('missing close')),60)
+        restarted=Store(self.path,min_interval=0,clock=lambda:self.now)
+        self.assertEqual(restarted.get('yahoo','good',lambda:{'price':100},60).status,'downloaded')
+        loader=Mock()
+        with self.assertRaisesRegex(DataUnavailable,'此標的暫停重試.*missing close'):
+            restarted.get('yahoo','bad:0',loader,60)
+        loader.assert_not_called()
+    def test_missing_close_reports_dates_without_filling(self):
+        from v52_engine import clean_history
+        h=synthetic();date=h.index[20];h.loc[date,'Close']=float('nan')
+        with self.assertRaisesRegex(ValueError,str(date.date())):clean_history(h)
+        self.assertTrue(pd.isna(h.loc[date,'Close']))
     def test_snapshot_is_separate_from_adjusted_history(self):
         from v52_official import normalize,roc_date
         r=normalize([{'Code':'2330','Date':'1150924','ClosingPrice':'1,000'}],'twse_quotes').iloc[0]
