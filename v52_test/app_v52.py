@@ -2,6 +2,7 @@
 from dataclasses import asdict
 import json
 import os
+import math
 from v52_cache import get_store
 from v52_bulk import scan_resumable,benchmark_refresh,limited_universe
 from v52_official import snapshots
@@ -19,7 +20,7 @@ st.set_page_config(page_title='Quant Stock Radar V5.2',page_icon='📊',layout='
 st.title('📊 Quant Stock Radar V5.2')
 if os.environ.get('V52_TEST_SITE')=='1':st.warning('🧪 V5.2 獨立測試站｜正式V5.1不受影響｜尚未通過正式部署驗收')
 st.caption('V5.2 – Quant Decision System｜量化投資決策輔助系統')
-st.caption(f'測試組建：{DEFAULT.model_version}｜批次續掃修正 boundary-v1')
+st.caption(f'測試組建：{DEFAULT.model_version}｜批次續掃修正 resume-v2')
 st.info('實驗模型：總分權重尚未完成完整多因子樣本外驗證。歷史統計只涵蓋技術＋大盤訊號；高信心標的另需完整模型驗證資格，目前不放行。')
 if st.session_state.get('v52_version')!=DEFAULT.model_version:
     for key in ['v52_result','v52_audit','v52_hist','v52_rows','v52_expected','v52_bt','v52_market','v52_bench','v52_scan_time']:st.session_state.pop(key,None)
@@ -59,6 +60,7 @@ with st.sidebar:
     st.caption('技術指標固定MA20/60、RSI14；所有分數權重與門檻集中於v52_config.py。每批25檔、批間休息5秒；每批最多120秒網路預算、每輪最多約600秒。暫停後按續掃，已完成結果保存6小時。')
     if st.button('更新公司清單及行情快取'):
         get_store().expire('checkpoint:')
+        st.session_state.pop('v52_scan_context',None)
         catalog.clear();history_batch.clear();fundamentals.clear();cached_backtest.clear()
         st.success('已標記資料待更新；保留舊快照與限流冷卻。請重新掃描，已顯示的結果仍是上次快照。')
 
@@ -70,7 +72,7 @@ with st.expander('指標中文解讀／模型設定與限制'):
     st.caption('所有模型參數在測試前固定，沒有為了提高勝率而調參。AI／記憶體等細分主題待可靠分類來源。')
 
 universe=pd.DataFrame();blocked=False
-if '台股' in markets:
+if '台股' in markets and not (st.session_state.get('v52_resume_button',False) and st.session_state.get('v52_scan_context')):
     try:
         with st.spinner('讀取上市櫃清單…'):full=catalog()
         universe=full.copy()
@@ -107,25 +109,64 @@ if st.button('單獨更新大盤'):
     bench,status=benchmark_refresh(['TW' if m=='台股' else 'US' for m in markets])
     st.session_state.update(v52_market=status,v52_bench=bench)
 
-resume_clicked=st.button('▶ 接續上次掃描',disabled=blocked)
-if st.button('🚀 開始掃描',type='primary',disabled=blocked) or resume_clicked:
-    if not markets:st.warning('請選擇至少一個市場。');st.stop()
-    if '台股' in markets and universe.empty:st.warning('請選擇至少一個產業。');st.stop()
-    tickers=universe.Ticker.tolist() if '台股' in markets else [];meta={}
-    if '台股' in markets:
-        meta={r.Ticker:{'Market':'TW','Company Name':r['公司名稱'],'Industry':r['產業'],'Industry Code':r['產業代碼']} for _,r in universe.iterrows()}
-    if '美股' in markets:
-        us=legacy.get_universe('US','demo' if us_mode=='示範12檔' else 'auto',max_us)
-        if us_mode=='自動擴充' and us==legacy.DEFAULT_US:st.warning('美股來源可能不可用，已退回示範12檔。')
-        for t in us:meta[t]={'Market':'US','Industry':'N/A'}
-        tickers+=us
-    tickers=list(dict.fromkeys(tickers));bench={};status={}
-    bench,status=benchmark_refresh(['TW' if m=='台股' else 'US' for m in markets])
+@st.fragment(run_every='1s')
+def resume_cooldown():
+    saved_audit=st.session_state.get('v52_audit')
+    if saved_audit is None or not saved_audit.attrs.get('pending',0):return
+    store=get_store()
+    seconds=max(0,math.ceil(store._state('yahoo').get('until',0)-store.clock()))
+    if seconds:
+        st.warning(f'Yahoo冷卻中：還需 {seconds//60:02d}:{seconds%60:02d}；已完成結果保留，倒數結束後按「接續上次掃描」。')
+    else:
+        st.info('可以接續上次掃描；將從第一檔未完成股票繼續，不重跑已完成股票。')
+resume_cooldown()
+
+resume_clicked=st.button('▶ 接續上次掃描',key='v52_resume_button')
+start_clicked=st.button('🚀 開始掃描',type='primary',disabled=blocked)
+if start_clicked or resume_clicked:
+    checkpoint_id=None
+    if resume_clicked:
+        context=st.session_state.get('v52_scan_context')
+        previous=st.session_state.get('v52_audit')
+        if previous is None or not previous.attrs.get('checkpoint'):
+            st.warning('目前沒有可接續的任務，請先按開始掃描。');st.stop()
+        if not previous.attrs.get('pending',0):
+            st.success(f'已完成 {len(previous)}/{len(previous)}、待續掃 0。');st.stop()
+        # 相容修補前仍留在session中的任務；順序取自舊audit，而非重新選股。
+        if context is None:
+            tickers=previous.Ticker.tolist()
+            old_rows=st.session_state.get('v52_rows',[])
+            old_meta={r['Ticker']:{k:r.get(k) for k in ['Market','Company Name','Industry','Industry Code']} for r in old_rows}
+            if 'full' in globals():
+                for _,r in full[full.Ticker.isin(tickers)].iterrows():
+                    old_meta.setdefault(r.Ticker,{'Market':'TW','Company Name':r['公司名稱'],'Industry':r['產業'],'Industry Code':r['產業代碼']})
+            context={'tickers':tickers,'meta':old_meta,'bench':st.session_state.get('v52_bench',{}),
+                     'status':st.session_state.get('v52_market',{}),'min_tw':min_tw,'min_us':min_us}
+        checkpoint_id=previous.attrs['checkpoint']
+        tickers=context['tickers'];meta=context['meta'];bench=context['bench'];status=context['status']
+        scan_min_tw=context['min_tw'];scan_min_us=context['min_us']
+        st.info(f"接續原任務：已處理 {len(tickers)-previous.attrs['pending']}/{len(tickers)}；沿用原股票池、大盤快照及篩選條件。")
+    else:
+        if not markets:st.warning('請選擇至少一個市場。');st.stop()
+        if '台股' in markets and universe.empty:st.warning('請選擇至少一個產業。');st.stop()
+        tickers=universe.Ticker.tolist() if '台股' in markets else [];meta={}
+        if '台股' in markets:
+            meta={r.Ticker:{'Market':'TW','Company Name':r['公司名稱'],'Industry':r['產業'],'Industry Code':r['產業代碼']} for _,r in universe.iterrows()}
+        if '美股' in markets:
+            us=legacy.get_universe('US','demo' if us_mode=='示範12檔' else 'auto',max_us)
+            if us_mode=='自動擴充' and us==legacy.DEFAULT_US:st.warning('美股來源可能不可用，已退回示範12檔。')
+            for t in us:meta[t]={'Market':'US','Industry':'N/A'}
+            tickers+=us
+        tickers=list(dict.fromkeys(tickers))
+        bench,status=benchmark_refresh(['TW' if m=='台股' else 'US' for m in markets])
+        scan_min_tw=min_tw;scan_min_us=min_us
+        context={'tickers':tickers,'meta':meta,'bench':bench,'status':status,'min_tw':min_tw,'min_us':min_us}
+    st.session_state.v52_scan_context=context
     bar=st.progress(0,text='開始分批下載…')
     batch_display=st.empty()
     phase_display=st.empty()
     try:
-        rows,audit,hist,expected=scan_resumable(tickers,meta,bench,lambda i,n,t:bar.progress(i/max(n,1),text=f'{i}/{n}：{t}'),min_tw,min_us,batch_report=lambda frame:batch_display.dataframe(frame,hide_index=True),status=phase_display.info)
+        rows,audit,hist,expected=scan_resumable(tickers,meta,bench,lambda i,n,t:bar.progress(i/max(n,1),text=f'{i}/{n}：{t}'),scan_min_tw,scan_min_us,batch_report=lambda frame:batch_display.dataframe(frame,hide_index=True),status=phase_display.info,checkpoint_id=checkpoint_id)
         bt={};result=finalize(rows,expected,bt)
         if not result.empty:
             for t in result.head(bt_n).Ticker:
@@ -137,7 +178,9 @@ if st.button('🚀 開始掃描',type='primary',disabled=blocked) or resume_clic
             result=finalize(rows,expected,bt)
         st.session_state.update(v52_result=result,v52_audit=audit,v52_hist=hist,v52_rows=rows,v52_expected=expected,v52_bt=bt,v52_market=status,v52_bench=bench,v52_scan_time=datetime.now(ZoneInfo('Asia/Taipei')).strftime('%Y-%m-%d %H:%M:%S'))
         remaining=audit.attrs.get('pending',0)
-        bar.progress((len(tickers)-remaining)/max(1,len(tickers)),text=f'本輪結束；待續掃 {remaining} 檔')
+        bar.progress((len(tickers)-remaining)/max(1,len(tickers)),text=f'本輪結束：已處理 {len(tickers)-remaining}/{len(tickers)}、待續掃 {remaining}')
+        st.success(f'已處理 {len(tickers)-remaining}/{len(tickers)}、待續掃 {remaining}')
+        if remaining:resume_cooldown()
     except Exception as exc:st.error(f'掃描未完成：{exc}')
 
 st.subheader('Market Status｜大盤環境')

@@ -36,7 +36,7 @@ def benchmark_refresh(markets,cfg=DEFAULT):
     return bench,states
 
 def scan_resumable(tickers,metadata,benchmarks,progress=None,min_tw_lots=0,min_us_cap=0,
-                   cfg=DEFAULT,batch_report=None,round_seconds=ROUND_SECONDS,sleep=time.sleep,status=None):
+                   cfg=DEFAULT,batch_report=None,round_seconds=ROUND_SECONDS,sleep=time.sleep,status=None,checkpoint_id=None):
     tickers=list(dict.fromkeys(tickers));store=get_store();start=time.monotonic()
     trace=[]
     def announce(message):
@@ -45,17 +45,41 @@ def scan_resumable(tickers,metadata,benchmarks,progress=None,min_tw_lots=0,min_u
     announce('讀取續掃紀錄')
     benchmark_id={m:(str(h.index[-1]),float(h.Close.iloc[-1]),h.attrs.get('cache_status')=='stale') if h is not None and not h.empty else None for m,h in benchmarks.items()}
     identity=[tickers,metadata,benchmark_id,min_tw_lots,min_us_cap,asdict(cfg),'bulk-v1']
-    job=hashlib.sha256(json.dumps(identity,sort_keys=True,default=str).encode()).hexdigest()
+    job=checkpoint_id or hashlib.sha256(json.dumps(identity,sort_keys=True,default=str).encode()).hexdigest()
     key='checkpoint:'+job;cached=store.read(key)
     valid=cached and not store._state('expired:'+key).get('expired') and time.time()-cached.value.get('created_at',0)<CHECKPOINT_TTL
+    if checkpoint_id and not valid:
+        raise ValueError('上次checkpoint已過期或已清除；未重新掃描任何股票。請明確按開始掃描建立任務。')
     state=cached.value if valid else {'created_at':time.time(),'rows':{},'audit':{},'done':[],'batches':[]}
+    context=state.get('context')
+    if checkpoint_id and context:
+        tickers=context['tickers'];metadata=context['metadata']
+        min_tw_lots=context['min_tw_lots'];min_us_cap=context['min_us_cap']
+        benchmarks={}
+        for market in context['markets']:
+            saved=store.read('checkpoint-benchmark:'+job+':'+market)
+            if saved is None:raise ValueError('續掃大盤快照遺失；未重新開始任務，請按開始掃描。')
+            benchmarks[market]=saved.value
+    state['context']={'tickers':tickers,'metadata':metadata,'min_tw_lots':min_tw_lots,
+                      'min_us_cap':min_us_cap,'markets':list(benchmarks)}
+    def save_position():
+        remaining=[t for t in tickers if t not in done]
+        state.update(rows=rows,audit=audit,done=[t for t in tickers if t in done],
+                     remaining_tickers=remaining,processed_count=len(done),
+                     next_index=next((i for i,t in enumerate(tickers) if t not in done),len(tickers)))
     rows=dict(state['rows']);audit=dict(state['audit']);done=set(state['done']);histories={}
     # 每批checkpoint包含成功行情，重新開頁或程序重啟可恢復；不從第1檔下載。
     for t in list(rows):
         h=store.read('checkpoint-history:'+job+':'+t)
         if h:histories[t]=h.value
+        elif checkpoint_id:raise ValueError(f'{t}已完成行情快照遺失；為避免重跑，已停止續掃。請按開始掃描。')
         else:done.discard(t);rows.pop(t,None)
     pending=[t for t in tickers if t not in done]
+    save_position()
+    initial={key:state}
+    for market,h in benchmarks.items():initial['checkpoint-benchmark:'+job+':'+market]=h
+    store.put_many(initial)
+    store._set_state('expired:'+key,{})
     expected={}
     for t in tickers:
         m=metadata.get(t,{});k=(m.get('Market','TW' if t.endswith(('.TW','.TWO')) else 'US'),m.get('Industry','N/A'))
@@ -91,7 +115,7 @@ def scan_resumable(tickers,metadata,benchmarks,progress=None,min_tw_lots=0,min_u
                  '空回應':store.metrics['empty_responses']-before['empty_responses'],
                  '重試':store.metrics['retries']-before['retries']}
         state['batches'].append(summary)
-        state.update(rows=rows,audit=audit,done=sorted(done))
+        save_position()
         checkpoint_values[key]=state
         store.put_many(checkpoint_values);store._set_state('expired:'+key,{})
         announce(f'第 {batch_number} 批checkpoint已保存')
@@ -110,6 +134,10 @@ def scan_resumable(tickers,metadata,benchmarks,progress=None,min_tw_lots=0,min_u
     result_audit.attrs['batches']=state['batches']
     result_audit.attrs['pending']=len(tickers)-len(done)
     result_audit.attrs['checkpoint']=job
+    result_audit.attrs['processed_count']=len(done)
+    result_audit.attrs['next_index']=state['next_index']
+    result_audit.attrs['remaining_tickers']=state['remaining_tickers']
+    result_audit.attrs['cooldown_until']=store._state('yahoo').get('until',0)
     announce(f'本輪結束：已處理 {len(done)}/{len(tickers)}，待續掃 {len(tickers)-len(done)}')
     result_audit.attrs['boundary_trace']=trace
     return list(rows.values()),result_audit,histories,expected
