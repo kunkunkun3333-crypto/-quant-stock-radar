@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 from v52_config import DEFAULT
-from v52_cache import get_store, network_budget, DataUnavailable, InvalidMarketData
+from v52_cache import get_store, network_budget, DataUnavailable, InvalidMarketData, EmptyMarketData
 from v52_engine import features,number,phase_a,regime,institutional_flow
 from v52_backtest import backtest,align_benchmark
 from v51_support import fetch_catalog,INDUSTRIES
@@ -40,9 +40,13 @@ def _load_history(ticker,period):
     # 單檔明確例外；yf.download會吞掉限流，並继续請求整批。
     if hasattr(yf,'config'):
         yf.config.network.retries=0;yf.config.debug.hide_exceptions=False
-    raw=yf.Ticker(ticker).history(period=period,interval='1d',auto_adjust=True,repair=False,keepna=True,timeout=12)
+    try:
+        raw=yf.Ticker(ticker).history(period=period,interval='1d',auto_adjust=True,repair=False,keepna=True,timeout=12)
+    except Exception as exc:
+        if type(exc).__name__=='YFPricesMissingError':raise EmptyMarketData(str(exc)) from exc
+        raise
     h=raw.copy() if raw is not None and not isinstance(raw.columns,pd.MultiIndex) else extract_history(raw,ticker)
-    if h.empty:raise InvalidMarketData(f'{ticker}：未取得有效行情')
+    if h.empty:raise EmptyMarketData(f'{ticker}：未取得有效行情')
     from v52_engine import clean_history
     try:return clean_history(h)
     except ValueError as exc:raise InvalidMarketData(f'{ticker}：{exc}') from exc
@@ -67,7 +71,8 @@ def history_batch(tickers,period='10y'):
 def _load_fundamentals(ticker):
     if hasattr(yf,'config'):yf.config.network.retries=0;yf.config.debug.hide_exceptions=False
     info=yf.Ticker(ticker).info or {}
-    if not info or not any(k in info for k in ['trailingEps','trailingPE','returnOnEquity','revenueGrowth','marketCap']):raise InvalidMarketData(f'{ticker}：基本面未回傳有效欄位')
+    if not info:raise EmptyMarketData(f'{ticker}：基本面空資料')
+    if not any(k in info for k in ['trailingEps','trailingPE','returnOnEquity','revenueGrowth','marketCap']):raise InvalidMarketData(f'{ticker}：基本面未回傳有效欄位')
     mapping={'EPS':'trailingEps','P/E':'trailingPE','Revenue Growth':'revenueGrowth','Earnings Growth':'earningsGrowth','ROE':'returnOnEquity','Gross Margin':'grossMargins','Operating Margin':'operatingMargins','Free Cash Flow':'freeCashflow','Market Cap':'marketCap','Debt To Equity':'debtToEquity'}
     out={k:number(info.get(v)) for k,v in mapping.items()}
     if out['P/E'] is not None and out['P/E']<=0:out['P/E']=None
@@ -138,7 +143,10 @@ def _scan(tickers,metadata,benchmarks,progress=None,min_tw_lots=0,min_us_cap=0,c
                     audit.append({'Ticker':t,'狀態':'條件排除','原因':'市值門檻'});continue
                 r=phase_a(r,reg,cfg);rows.append(r)
                 audit.append({'Ticker':t,'狀態':'成功分析','原因':'；'.join(notes),'行情日期':r['Price Date']})
-            except Exception as exc:audit.append({'Ticker':t,'狀態':'資料失敗','原因':str(exc)})
+            except Exception as exc:
+                reason=str(exc)
+                pending=any(x in reason.lower() for x in ['rate','429','冷卻','預算','timeout','empty','未取得有效行情','暫停重試'])
+                audit.append({'Ticker':t,'狀態':'待續掃' if pending else '資料失敗','原因':reason})
             finally:
                 done+=1
                 if progress:progress(done,len(tickers),t)

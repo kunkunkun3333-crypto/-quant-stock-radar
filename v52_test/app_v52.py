@@ -3,6 +3,7 @@ from dataclasses import asdict
 import json
 import os
 from v52_cache import get_store
+from v52_bulk import scan_resumable,benchmark_refresh,limited_universe
 from v52_official import snapshots
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -18,7 +19,7 @@ st.set_page_config(page_title='Quant Stock Radar V5.2',page_icon='📊',layout='
 st.title('📊 Quant Stock Radar V5.2')
 if os.environ.get('V52_TEST_SITE')=='1':st.warning('🧪 V5.2 獨立測試站｜正式V5.1不受影響｜尚未通過正式部署驗收')
 st.caption('V5.2 – Quant Decision System｜量化投資決策輔助系統')
-st.caption(f'測試組建：{DEFAULT.model_version}')
+st.caption(f'測試組建：{DEFAULT.model_version}｜批次續掃修正 bulk-v1')
 st.info('實驗模型：總分權重尚未完成完整多因子樣本外驗證。歷史統計只涵蓋技術＋大盤訊號；高信心標的另需完整模型驗證資格，目前不放行。')
 if st.session_state.get('v52_version')!=DEFAULT.model_version:
     for key in ['v52_result','v52_audit','v52_hist','v52_rows','v52_expected','v52_bt','v52_market','v52_bench','v52_scan_time']:st.session_state.pop(key,None)
@@ -45,6 +46,7 @@ with st.sidebar:
     st.header('掃描設定')
     markets=st.multiselect('掃描市場',['台股','美股'],default=['台股'])
     mode=st.selectbox('台股股票池',['上市櫃科技股（完整清單）','全部上市櫃公司','示範台股10檔'],index=2)
+    tw_limit=st.selectbox('台股掃描上限',[10,50,100,300,500,1000,'全部'],index=0)
     sectors=st.multiselect('科技股產業範圍',list(INDUSTRIES.values()),default=list(INDUSTRIES.values()),disabled=mode!='上市櫃科技股（完整清單）')
     extra=st.text_input('補充台股代號（逗號分隔）',placeholder='2408,6488')
     st.caption('使用官方產業分類；不把AI、伺服器、記憶體等主題自行推定為產業。科技模式不含興櫃／ETF。')
@@ -54,8 +56,9 @@ with st.sidebar:
     min_us=st.number_input('美股最低市值（十億美元）',0.,1000.,10.,1.)*1e9
     top_n=st.slider('排行榜顯示檔數',10,2000,100,10)
     bt_n=st.slider('掃描後回測前N名',0,30,5,help='回測不影響總分；未回測股票顯示N/A，可在個股頁按需執行。挑選目前高分股票回測有選樣偏誤。')
-    st.caption('技術指標固定MA20/60、RSI14；所有分數權重與門檻集中於v52_config.py。每輪下載預算約120秒（不含正在執行的請求及計算），重掃會沿用逐檔快取並續抓缺項。')
+    st.caption('技術指標固定MA20/60、RSI14；所有分數權重與門檻集中於v52_config.py。每批25檔、批間休息5秒；每輪約120秒網路預算。暫停後按續掃，已完成結果保存6小時。')
     if st.button('更新公司清單及行情快取'):
+        get_store().expire('checkpoint:')
         catalog.clear();history_batch.clear();fundamentals.clear();cached_backtest.clear()
         st.success('已標記資料待更新；保留舊快照與限流冷卻。請重新掃描，已顯示的結果仍是上次快照。')
 
@@ -77,6 +80,9 @@ if '台股' in markets:
             selected=full[full.Ticker.eq(code)|full.Ticker.str.split('.').str[0].eq(code)]
             if selected.empty:blocked=True;st.error(f'找不到上市櫃公司代號：{code}')
             else:universe=pd.concat([universe,selected]).drop_duplicates('Ticker')
+        pool_total=len(universe)
+        universe=limited_universe(universe,tw_limit)
+        st.caption(f'原股票池 {pool_total} 檔；本次上限 {tw_limit}；按代號排序取樣')
         st.subheader(f'台股待掃描清單：{len(universe)} 檔')
         with st.expander('查看完整公司名單與產業分布'):
             table(universe)
@@ -97,7 +103,12 @@ with st.expander('資料快取與來源狀態'):
     st.caption('逐檔磁碟快取：行情6小時、基本面24小時。限流冷卻30分鐘；最多沿用7日內已取得快照並標記備援。重部署可能清除Cloud本機磁碟，這不是永久資料庫。')
     st.json(get_store().status())
 
-if st.button('🚀 開始掃描',type='primary',disabled=blocked):
+if st.button('單獨更新大盤'):
+    bench,status=benchmark_refresh(['TW' if m=='台股' else 'US' for m in markets])
+    st.session_state.update(v52_market=status,v52_bench=bench)
+
+resume_clicked=st.button('▶ 接續上次掃描',disabled=blocked)
+if st.button('🚀 開始掃描',type='primary',disabled=blocked) or resume_clicked:
     if not markets:st.warning('請選擇至少一個市場。');st.stop()
     if '台股' in markets and universe.empty:st.warning('請選擇至少一個產業。');st.stop()
     tickers=universe.Ticker.tolist() if '台股' in markets else [];meta={}
@@ -109,14 +120,11 @@ if st.button('🚀 開始掃描',type='primary',disabled=blocked):
         for t in us:meta[t]={'Market':'US','Industry':'N/A'}
         tickers+=us
     tickers=list(dict.fromkeys(tickers));bench={};status={}
-    for market,ticker in [('TW','^TWII'),('US','SPY')]:
-        if (market=='TW' and '台股' not in markets) or (market=='US' and '美股' not in markets):continue
-        try:bench[market]=history_batch((ticker,),DEFAULT.period).get(ticker,pd.DataFrame())
-        except Exception as exc:bench[market]=pd.DataFrame();st.warning(f'{ticker} 基準N/A：{exc}')
-        status[market]=benchmark_state(bench[market])
+    bench,status=benchmark_refresh(['TW' if m=='台股' else 'US' for m in markets])
     bar=st.progress(0,text='開始分批下載…')
+    batch_display=st.empty()
     try:
-        rows,audit,hist,expected=scan(tickers,meta,bench,lambda i,n,t:bar.progress(i/max(n,1),text=f'{i}/{n}：{t}'),min_tw,min_us)
+        rows,audit,hist,expected=scan_resumable(tickers,meta,bench,lambda i,n,t:bar.progress(i/max(n,1),text=f'{i}/{n}：{t}'),min_tw,min_us,batch_report=lambda frame:batch_display.dataframe(frame,hide_index=True))
         bt={};result=finalize(rows,expected,bt)
         if not result.empty:
             for t in result.head(bt_n).Ticker:
@@ -127,7 +135,8 @@ if st.button('🚀 開始掃描',type='primary',disabled=blocked):
                 except Exception as exc:st.warning(f'{t} 回測N/A：{exc}')
             result=finalize(rows,expected,bt)
         st.session_state.update(v52_result=result,v52_audit=audit,v52_hist=hist,v52_rows=rows,v52_expected=expected,v52_bt=bt,v52_market=status,v52_bench=bench,v52_scan_time=datetime.now(ZoneInfo('Asia/Taipei')).strftime('%Y-%m-%d %H:%M:%S'))
-        bar.progress(1.,text='完成')
+        remaining=audit.attrs.get('pending',0)
+        bar.progress((len(tickers)-remaining)/max(1,len(tickers)),text=f'本輪結束；待續掃 {remaining} 檔')
     except Exception as exc:st.error(f'掃描未完成：{exc}')
 
 st.subheader('Market Status｜大盤環境')
@@ -140,7 +149,10 @@ else:
 if 'v52_result' in st.session_state:
     df=st.session_state.v52_result;audit=st.session_state.v52_audit
     counts=audit['狀態'].value_counts() if not audit.empty else {}
-    for col,label,val in zip(st.columns(4),['已嘗試','成功分析','條件排除','資料失敗'],[len(audit),counts.get('成功分析',0),counts.get('條件排除',0),counts.get('資料失敗',0)]):col.metric(label,int(val))
+    for col,label,val in zip(st.columns(4),['已處理','成功分析','條件排除','資料失敗'],[len(audit)-counts.get('待續掃',0),counts.get('成功分析',0),counts.get('條件排除',0),counts.get('資料失敗',0)]):col.metric(label,int(val))
+    st.metric('待續掃（非資料失敗）',int(counts.get('待續掃',0)))
+    if audit.attrs.get('batches'):
+        with st.expander('每批處理統計',expanded=True):st.dataframe(pd.DataFrame(audit.attrs['batches']),hide_index=True)
     st.caption(f'掃描快照（台北）：{st.session_state.v52_scan_time}｜切换頁面不會重新下載股票池行情；修改設定後需重新掃描。')
     with st.expander('逐檔掃描紀錄／N/A原因'):
         table(audit);st.download_button('下載掃描紀錄',export(audit),'audit_v52.csv','text/csv')

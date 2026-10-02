@@ -21,6 +21,7 @@ def network_budget(seconds):
     finally:_DEADLINE.reset(token)
 
 class DataUnavailable(RuntimeError):pass
+class EmptyMarketData(RuntimeError):pass
 class InvalidMarketData(ValueError):
     """單一標的資料不合格，不能據此判定整個來源故障。"""
     pass
@@ -45,10 +46,11 @@ def is_rate_limit(exc):
     return any(s in text for s in ('ratelimit','rate limit','too many requests','429'))
 
 class Store:
-    def __init__(self,path,min_interval=1.5,cooldown=1800,clock=time.time,sleep=time.sleep):
+    def __init__(self,path,min_interval=1.5,cooldown=1800,clock=time.time,sleep=time.sleep,retries=0,backoff=2):
         self.path=Path(path);self.path.parent.mkdir(parents=True,exist_ok=True)
+        self.retries=retries;self.backoff=backoff
         self.min_interval=min_interval;self.cooldown=cooldown;self.clock=clock;self.sleep=sleep
-        self.lock=threading.RLock();self.metrics={'network_calls':0,'fresh_hits':0,'stale_hits':0,'blocked':0,'errors':0}
+        self.lock=threading.RLock();self.metrics={'network_calls':0,'fresh_hits':0,'stale_hits':0,'blocked':0,'errors':0,'retries':0,'rate_limits':0,'empty_responses':0}
         with self.connect() as c:
             c.execute('CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, fetched REAL, payload BLOB)')
             c.execute('CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT)')
@@ -107,7 +109,7 @@ class Store:
             state['last_request']=self.clock();self._set_state(provider,state)
             self.metrics['network_calls']+=1
             try:
-                value=loader()
+                value=self._load_retry(loader)
                 if value is None or (isinstance(value,(dict,list,pd.DataFrame)) and len(value)==0):raise ValueError('來源未提供有效資料')
                 self.put(key,value)
             except Exception as exc:
@@ -125,6 +127,25 @@ class Store:
             self._set_state('failure:'+key,{})
             self._set_state('expired:'+key,{})
             return Cached(value,'downloaded',self.clock())
+    def _load_retry(self,loader):
+        for attempt in range(self.retries+1):
+            try:
+                value=loader()
+                if value is None or (isinstance(value,(dict,list,pd.DataFrame)) and len(value)==0):
+                    raise EmptyMarketData('空資料；待續掃')
+                return value
+            except Exception as exc:
+                rate=is_rate_limit(exc);empty=isinstance(exc,EmptyMarketData)
+                if rate:self.metrics['rate_limits']+=1
+                if empty:self.metrics['empty_responses']+=1
+                if not (rate or empty or isinstance(exc,(TimeoutError,ConnectionError))):raise
+                if attempt>=self.retries:raise
+                delay=max(self.min_interval,self.backoff*2**attempt)
+                deadline=_DEADLINE.get()
+                if deadline is not None and time.monotonic()+delay>=deadline:raise
+                self.sleep(delay)
+                self.metrics['retries']+=1;self.metrics['network_calls']+=1
+
     def status(self):
         with self.connect() as c:
             count=c.execute('SELECT COUNT(*) FROM cache').fetchone()[0]
@@ -134,4 +155,4 @@ class Store:
 @lru_cache(maxsize=1)
 def get_store():
     root=Path(os.environ.get('V52_CACHE_DIR',str(Path(__file__).parent/'.cache'/'v52')))
-    return Store(root/'market.sqlite3')
+    return Store(root/'market.sqlite3',retries=2,backoff=2)
