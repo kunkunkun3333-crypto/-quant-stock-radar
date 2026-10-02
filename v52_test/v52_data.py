@@ -58,6 +58,47 @@ def extract_history(raw,ticker):
     if frame.index.tz is not None:frame.index=frame.index.tz_localize(None)
     return frame
 
+def prepare_latest_bar(raw,ticker,now=None):
+    """僅台股與加權指數；最多排除一筆近期尾列，不刪除第二筆近期缺損。"""
+    if raw is None or raw.empty:return pd.DataFrame()
+    h=raw.copy()
+    if isinstance(h.columns,pd.MultiIndex):
+        for level in range(h.columns.nlevels):
+            if ticker in h.columns.get_level_values(level):
+                h=h.xs(ticker,axis=1,level=level).copy();break
+        else:raise InvalidMarketData(f'{ticker}：找不到行情欄位')
+    if not (ticker.endswith(('.TW','.TWO')) or ticker=='^TWII'):return h
+    index=pd.DatetimeIndex(pd.to_datetime(h.index))
+    # aware時間戳先轉台北，再取日期；naive Yahoo日線標籤按台北日期解讀。
+    index=index.tz_localize('Asia/Taipei') if index.tz is None else index.tz_convert('Asia/Taipei')
+    h.index=index.normalize().tz_localize(None)
+    h=h.sort_index()
+    if h.index.has_duplicates:raise InvalidMarketData(f'{ticker}：台北日期對齊後重複，拒絕猜測日K')
+    current=pd.Timestamp.now(tz='Asia/Taipei') if now is None else pd.Timestamp(now)
+    current=current.tz_localize('Asia/Taipei') if current.tzinfo is None else current.tz_convert('Asia/Taipei')
+    date=h.index[-1];today=current.tz_localize(None).normalize()
+    if date>today:raise InvalidMarketData(f'{ticker}：日K日期在台北未來日期，請核對來源')
+    ohlc=h.reindex(columns=['Open','High','Low','Close']).apply(pd.to_numeric,errors='coerce')
+    invalid=(~np.isfinite(ohlc.to_numpy())|(ohlc.to_numpy()<=0)).any(axis=1)
+    intraday=date==today and (current.hour,current.minute)<(13,30)
+    weekend=date.dayofweek>=5
+    recent_tail=(today-date).days<=7
+    reason='當日普通交易尚未收盤' if intraday else '最新OHLC缺值或非正數；完成狀態未確認' if invalid[-1] else '最新日期為週末，非一般交易日' if weekend else ''
+    warning=''
+    if reason and recent_tail:
+        warning=f'Data Quality Warning：移除未完成最新交易日 bar：{date.date()}（{reason}）；未補價'
+        h=h.iloc[:-1].copy()
+        h.attrs['incomplete_latest_bar']={'date':str(date.date()),'reason':reason,'checked_at':current.isoformat()}
+    if h.empty:raise InvalidMarketData(f'{ticker}：排除尾列後沒有已完成行情')
+    # 不迴圈裁尾；原倒數第2筆或更早的近期OHLC缺損仍拒絕。
+    recent=h.tail(60).reindex(columns=['Open','High','Low','Close']).apply(pd.to_numeric,errors='coerce')
+    bad=(~np.isfinite(recent.to_numpy())|(recent.to_numpy()<=0)).any(axis=1)
+    if bad.any():
+        dates=', '.join(str(d.date()) for d in recent.index[bad][:5])
+        raise InvalidMarketData(f'{ticker}：最近60筆含缺損（排除最新候選bar後）：{dates}')
+    if warning:h.attrs['latest_bar_warning']=warning
+    return h
+
 def _load_history(ticker,period):
     # 單檔明確例外；yf.download會吞掉限流，並继续請求整批。
     if hasattr(yf,'config'):
@@ -68,10 +109,14 @@ def _load_history(ticker,period):
     except Exception as exc:
         if type(exc).__name__=='YFPricesMissingError':raise EmptyMarketData(str(exc)) from exc
         raise
-    h=raw.copy() if raw is not None and not isinstance(raw.columns,pd.MultiIndex) else extract_history(raw,ticker)
+    h=prepare_latest_bar(raw,ticker)
     if h.empty:raise EmptyMarketData(f'{ticker}：未取得有效行情')
     from v52_engine import clean_history
-    try:return clean_history(h)
+    try:
+        cleaned=clean_history(h)
+        warnings=[cleaned.attrs.get('latest_bar_warning',''),cleaned.attrs.get('data_quality_warning','')]
+        cleaned.attrs['data_quality_warning']='；'.join(x for x in warnings if x)
+        return cleaned
     except ValueError as exc:raise InvalidMarketData(f'{ticker}：{exc}') from exc
 
 class HistoryBatch(dict):
@@ -82,7 +127,7 @@ def history_batch(tickers,period='10y'):
     for number_,ticker in enumerate(dict.fromkeys(tickers),1):
         _activity(f'下載行情 {number_}/{len(tickers)}：{ticker}')
         try:
-            cached=get_store().get('yahoo',f'history:v3:{ticker}:{period}',lambda:_load_history(ticker,period),DEFAULT.history_ttl,DEFAULT.fallback_max_age)
+            cached=get_store().get('yahoo',f'history:v4:{ticker}:{period}',lambda:_load_history(ticker,period),DEFAULT.history_ttl,DEFAULT.fallback_max_age)
             h=cached.value
             h.attrs.update({'cache_status':cached.status,'fetched_at':cached.fetched_at,'warning':'；'.join(x for x in [cached.warning,h.attrs.get('data_quality_warning','')] if x),'source':'Yahoo adjusted daily'})
             result[ticker]=h
@@ -123,7 +168,7 @@ def benchmark_state(hist,cfg=DEFAULT):
     try:
         f=features(hist);date=f.index[-1]
         stale=hist.attrs.get('cache_status')=='stale' or (pd.Timestamp.now().normalize()-date.normalize()).days>cfg.stale_days
-        return {'Regime':'N/A' if stale else regime(f.iloc[-1]),'Date':str(date.date()),'Price':float(f['Latest Price'].iloc[-1]),'MA20':number(f.MA20.iloc[-1]),'MA60':number(f.MA60.iloc[-1]),'Reason':'行情過舊' if stale else ''}
+        return {'Regime':'N/A' if stale else regime(f.iloc[-1]),'Date':str(date.date()),'Price':float(f['Latest Price'].iloc[-1]),'MA20':number(f.MA20.iloc[-1]),'MA60':number(f.MA60.iloc[-1]),'Reason':'行情過舊' if stale else hist.attrs.get('data_quality_warning','')}
     except Exception as exc:return {'Regime':'N/A','Date':None,'Reason':str(exc)}
 
 def scan(tickers,metadata,benchmarks,progress=None,min_tw_lots=0,min_us_cap=0,cfg=DEFAULT):
