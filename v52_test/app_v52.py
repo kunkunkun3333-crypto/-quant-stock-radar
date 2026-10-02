@@ -19,7 +19,7 @@ st.set_page_config(page_title='Quant Stock Radar V5.2',page_icon='📊',layout='
 st.title('📊 Quant Stock Radar V5.2')
 if os.environ.get('V52_TEST_SITE')=='1':st.warning('🧪 V5.2 獨立測試站｜正式V5.1不受影響｜尚未通過正式部署驗收')
 st.caption('V5.2 – Quant Decision System｜量化投資決策輔助系統')
-st.caption(f'測試組建：{DEFAULT.model_version}｜批次續掃修正 bulk-v1')
+st.caption(f'測試組建：{DEFAULT.model_version}｜批次續掃修正 boundary-v1')
 st.info('實驗模型：總分權重尚未完成完整多因子樣本外驗證。歷史統計只涵蓋技術＋大盤訊號；高信心標的另需完整模型驗證資格，目前不放行。')
 if st.session_state.get('v52_version')!=DEFAULT.model_version:
     for key in ['v52_result','v52_audit','v52_hist','v52_rows','v52_expected','v52_bt','v52_market','v52_bench','v52_scan_time']:st.session_state.pop(key,None)
@@ -56,7 +56,7 @@ with st.sidebar:
     min_us=st.number_input('美股最低市值（十億美元）',0.,1000.,10.,1.)*1e9
     top_n=st.slider('排行榜顯示檔數',10,2000,100,10)
     bt_n=st.slider('掃描後回測前N名',0,30,5,help='回測不影響總分；未回測股票顯示N/A，可在個股頁按需執行。挑選目前高分股票回測有選樣偏誤。')
-    st.caption('技術指標固定MA20/60、RSI14；所有分數權重與門檻集中於v52_config.py。每批25檔、批間休息5秒；每輪約120秒網路預算。暫停後按續掃，已完成結果保存6小時。')
+    st.caption('技術指標固定MA20/60、RSI14；所有分數權重與門檻集中於v52_config.py。每批25檔、批間休息5秒；每批最多120秒網路預算、每輪最多約600秒。暫停後按續掃，已完成結果保存6小時。')
     if st.button('更新公司清單及行情快取'):
         get_store().expire('checkpoint:')
         catalog.clear();history_batch.clear();fundamentals.clear();cached_backtest.clear()
@@ -123,8 +123,9 @@ if st.button('🚀 開始掃描',type='primary',disabled=blocked) or resume_clic
     bench,status=benchmark_refresh(['TW' if m=='台股' else 'US' for m in markets])
     bar=st.progress(0,text='開始分批下載…')
     batch_display=st.empty()
+    phase_display=st.empty()
     try:
-        rows,audit,hist,expected=scan_resumable(tickers,meta,bench,lambda i,n,t:bar.progress(i/max(n,1),text=f'{i}/{n}：{t}'),min_tw,min_us,batch_report=lambda frame:batch_display.dataframe(frame,hide_index=True))
+        rows,audit,hist,expected=scan_resumable(tickers,meta,bench,lambda i,n,t:bar.progress(i/max(n,1),text=f'{i}/{n}：{t}'),min_tw,min_us,batch_report=lambda frame:batch_display.dataframe(frame,hide_index=True),status=phase_display.info)
         bt={};result=finalize(rows,expected,bt)
         if not result.empty:
             for t in result.head(bt_n).Ticker:
@@ -151,6 +152,8 @@ if 'v52_result' in st.session_state:
     counts=audit['狀態'].value_counts() if not audit.empty else {}
     for col,label,val in zip(st.columns(4),['已處理','成功分析','條件排除','資料失敗'],[len(audit)-counts.get('待續掃',0),counts.get('成功分析',0),counts.get('條件排除',0),counts.get('資料失敗',0)]):col.metric(label,int(val))
     st.metric('待續掃（非資料失敗）',int(counts.get('待續掃',0)))
+    if audit.attrs.get('boundary_trace'):
+        with st.expander('批次切換紀錄'):st.dataframe(pd.DataFrame(audit.attrs['boundary_trace']),hide_index=True)
     if audit.attrs.get('batches'):
         with st.expander('每批處理統計',expanded=True):st.dataframe(pd.DataFrame(audit.attrs['batches']),hide_index=True)
     st.caption(f'掃描快照（台北）：{st.session_state.v52_scan_time}｜切换頁面不會重新下載股票池行情；修改設定後需重新掃描。')

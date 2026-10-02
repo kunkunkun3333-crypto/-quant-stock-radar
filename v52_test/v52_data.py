@@ -1,5 +1,8 @@
 """可替換的資料層；所有模型函式與V5.1全域CFG隔離。"""
 import time
+from contextvars import ContextVar
+from contextlib import contextmanager
+from curl_cffi import requests as curl_requests
 from datetime import datetime,timezone
 import numpy as np
 import pandas as pd
@@ -10,6 +13,25 @@ from v52_cache import get_store, network_budget, DataUnavailable, InvalidMarketD
 from v52_engine import features,number,phase_a,regime,institutional_flow
 from v52_backtest import backtest,align_benchmark
 from v51_support import fetch_catalog,INDUSTRIES
+
+_ACTIVITY=ContextVar('v52_download_activity',default=None)
+@contextmanager
+def download_activity(callback):
+    token=_ACTIVITY.set(callback)
+    try:yield
+    finally:_ACTIVITY.reset(token)
+def _activity(message):
+    callback=_ACTIVITY.get()
+    if callback:callback(message)
+
+class BoundedSession(curl_requests.Session):
+    """每一個Yahoo HTTP请求上限12秒，包括info內部請求。"""
+    def request(self,method,url,*args,**kwargs):
+        timeout=kwargs.get('timeout')
+        if isinstance(timeout,(tuple,list)):
+            timeout=sum(float(x) for x in timeout if x is not None)
+        kwargs['timeout']=min(float(timeout),12.) if timeout is not None else 12.
+        return super().request(method,url,*args,**kwargs)
 
 @st.cache_data(ttl=21600,show_spinner=False)
 def catalog():
@@ -41,7 +63,8 @@ def _load_history(ticker,period):
     if hasattr(yf,'config'):
         yf.config.network.retries=0;yf.config.debug.hide_exceptions=False
     try:
-        raw=yf.Ticker(ticker).history(period=period,interval='1d',auto_adjust=True,repair=False,keepna=True,timeout=12)
+        with BoundedSession(impersonate='chrome') as session:
+            raw=yf.Ticker(ticker,session=session).history(period=period,interval='1d',auto_adjust=True,repair=False,keepna=True,timeout=12)
     except Exception as exc:
         if type(exc).__name__=='YFPricesMissingError':raise EmptyMarketData(str(exc)) from exc
         raise
@@ -56,7 +79,8 @@ class HistoryBatch(dict):
 
 def history_batch(tickers,period='10y'):
     result=HistoryBatch();errors=[]
-    for ticker in dict.fromkeys(tickers):
+    for number_,ticker in enumerate(dict.fromkeys(tickers),1):
+        _activity(f'下載行情 {number_}/{len(tickers)}：{ticker}')
         try:
             cached=get_store().get('yahoo',f'history:v3:{ticker}:{period}',lambda:_load_history(ticker,period),DEFAULT.history_ttl,DEFAULT.fallback_max_age)
             h=cached.value
@@ -70,7 +94,8 @@ def history_batch(tickers,period='10y'):
 
 def _load_fundamentals(ticker):
     if hasattr(yf,'config'):yf.config.network.retries=0;yf.config.debug.hide_exceptions=False
-    info=yf.Ticker(ticker).info or {}
+    with BoundedSession(impersonate='chrome') as session:
+        info=yf.Ticker(ticker,session=session).info or {}
     if not info:raise EmptyMarketData(f'{ticker}：基本面空資料')
     if not any(k in info for k in ['trailingEps','trailingPE','returnOnEquity','revenueGrowth','marketCap']):raise InvalidMarketData(f'{ticker}：基本面未回傳有效欄位')
     mapping={'EPS':'trailingEps','P/E':'trailingPE','Revenue Growth':'revenueGrowth','Earnings Growth':'earningsGrowth','ROE':'returnOnEquity','Gross Margin':'grossMargins','Operating Margin':'operatingMargins','Free Cash Flow':'freeCashflow','Market Cap':'marketCap','Debt To Equity':'debtToEquity'}
@@ -127,6 +152,7 @@ def _scan(tickers,metadata,benchmarks,progress=None,min_tw_lots=0,min_us_cap=0,c
                 if h.attrs.get('warning'):notes.append('行情提示：'+h.attrs['warning'])
                 if len(f)<cfg.minimum_bars:raise ValueError(f'歷史僅{len(f)}筆，至少需要{cfg.minimum_bars}筆')
                 r=f.iloc[-1].to_dict();histories[t]=h
+                _activity(f'讀取基本面：{t}')
                 try:fund=fundamentals(t)
                 except Exception as exc:fund={};notes.append('基本面N/A：'+str(exc))
                 if fund.get('Fundamental Warning'):notes.append('基本面備援：'+fund['Fundamental Warning'])

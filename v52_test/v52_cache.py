@@ -73,6 +73,13 @@ class Store:
         except (ValueError,KeyError,TypeError,zlib.error):return None
     def put(self,key,value,fetched=None):
         with self.connect() as c:c.execute('INSERT OR REPLACE INTO cache VALUES (?,?,?)',(key,self.clock() if fetched is None else fetched,encode(value)))
+    def put_many(self,values):
+        # 先序列化，再用單一短交易保存整批；不逐檔等候SQLite鎖。
+        now=self.clock()
+        payload=[(key,now,encode(value)) for key,value in values.items()]
+        with self.connect() as c:
+            c.executemany('INSERT OR REPLACE INTO cache VALUES (?,?,?)',payload)
+
     def expire(self,prefix):
         # 保留成功快照及其真實取得時間；標記需更新，不抹除冷卻或舊資料。
         with self.connect() as c:

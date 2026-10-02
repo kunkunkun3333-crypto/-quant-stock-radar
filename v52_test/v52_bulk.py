@@ -9,7 +9,7 @@ import v52_data as data
 
 BATCH_SIZE=25
 BATCH_COOLDOWN=5
-ROUND_SECONDS=120
+ROUND_SECONDS=600
 CHECKPOINT_TTL=21600
 
 def limited_universe(frame,limit):
@@ -36,8 +36,13 @@ def benchmark_refresh(markets,cfg=DEFAULT):
     return bench,states
 
 def scan_resumable(tickers,metadata,benchmarks,progress=None,min_tw_lots=0,min_us_cap=0,
-                   cfg=DEFAULT,batch_report=None,round_seconds=ROUND_SECONDS,sleep=time.sleep):
+                   cfg=DEFAULT,batch_report=None,round_seconds=ROUND_SECONDS,sleep=time.sleep,status=None):
     tickers=list(dict.fromkeys(tickers));store=get_store();start=time.monotonic()
+    trace=[]
+    def announce(message):
+        trace.append({'秒':round(time.monotonic()-start,3),'事件':message})
+        if status:status(message)
+    announce('讀取續掃紀錄')
     benchmark_id={m:(str(h.index[-1]),float(h.Close.iloc[-1]),h.attrs.get('cache_status')=='stale') if h is not None and not h.empty else None for m,h in benchmarks.items()}
     identity=[tickers,metadata,benchmark_id,min_tw_lots,min_us_cap,asdict(cfg),'bulk-v1']
     job=hashlib.sha256(json.dumps(identity,sort_keys=True,default=str).encode()).hexdigest()
@@ -56,18 +61,25 @@ def scan_resumable(tickers,metadata,benchmarks,progress=None,min_tw_lots=0,min_u
         m=metadata.get(t,{});k=(m.get('Market','TW' if t.endswith(('.TW','.TWO')) else 'US'),m.get('Industry','N/A'))
         expected[k]=expected.get(k,0)+1
     for offset in range(0,len(pending),BATCH_SIZE):
-        if time.monotonic()-start>=round_seconds:break
+        if time.monotonic()-start>=round_seconds:
+            announce('本輪時間預算已到，保留結果待續掃');break
         provider=store._state('yahoo')
-        if provider.get('until',0)>store.clock():break
+        if provider.get('until',0)>store.clock():
+            announce(f"Yahoo冷卻中，約{int(provider['until']-store.clock())}秒後可續掃");break
         batch=pending[offset:offset+BATCH_SIZE];before=dict(store.metrics)
         remaining=max(.001,round_seconds-(time.monotonic()-start))
-        local_cfg=replace(cfg,batch_size=BATCH_SIZE,scan_network_budget_seconds=remaining)
+        local_cfg=replace(cfg,batch_size=BATCH_SIZE,scan_network_budget_seconds=min(cfg.scan_network_budget_seconds,remaining))
+        batch_number=len(state['batches'])+1
+        announce(f'第 {batch_number} 批開始：本批 {len(batch)} 檔，累計已完成 {len(done)}/{len(tickers)}')
         def update(i,n,t):
             if progress:progress(len(done)+i,len(tickers),t)
-        r,a,h,_=scan(batch,metadata,benchmarks,update,min_tw_lots,min_us_cap,local_cfg)
+        with data.download_activity(lambda message:announce(f'第 {batch_number} 批｜{message}')):
+            r,a,h,_=scan(batch,metadata,benchmarks,update,min_tw_lots,min_us_cap,local_cfg)
+        announce(f'第 {batch_number} 批分析完成，正在寫入checkpoint')
+        checkpoint_values={}
         for item in r:
             t=item['Ticker'];rows[t]=_plain(item)
-            if t in h:store.put('checkpoint-history:'+job+':'+t,h[t]);histories[t]=h[t]
+            if t in h:checkpoint_values['checkpoint-history:'+job+':'+t]=h[t];histories[t]=h[t]
         for item in a.to_dict('records'):
             t=item['Ticker'];audit[t]=_plain(item)
             if item['狀態']!='待續掃':done.add(t)
@@ -79,16 +91,25 @@ def scan_resumable(tickers,metadata,benchmarks,progress=None,min_tw_lots=0,min_u
                  '空回應':store.metrics['empty_responses']-before['empty_responses'],
                  '重試':store.metrics['retries']-before['retries']}
         state['batches'].append(summary)
-        state.update(rows=rows,audit=audit,done=sorted(done));store.put(key,state);store._set_state('expired:'+key,{})
+        state.update(rows=rows,audit=audit,done=sorted(done))
+        checkpoint_values[key]=state
+        store.put_many(checkpoint_values);store._set_state('expired:'+key,{})
+        announce(f'第 {batch_number} 批checkpoint已保存')
         if batch_report:batch_report(pd.DataFrame(state['batches']))
-        if summary['待續掃'] or store._state('yahoo').get('until',0)>store.clock():break
+        if summary['待續掃'] or store._state('yahoo').get('until',0)>store.clock():
+            announce('本批有待續掃或Yahoo冷卻，已暫停；請稍後按接續上次掃描');break
         if offset+BATCH_SIZE<len(pending):
-            if time.monotonic()-start+BATCH_COOLDOWN>=round_seconds:break
-            sleep(BATCH_COOLDOWN)
+            if time.monotonic()-start+BATCH_COOLDOWN>=round_seconds:
+                announce('本輪時間預算不足，已保存；請按接續上次掃描');break
+            for seconds in range(BATCH_COOLDOWN,0,-1):
+                announce(f'第 {batch_number} 批完成；{seconds} 秒後開始第 {batch_number+1} 批')
+                sleep(1)
     for t in tickers:
         if t not in done:audit[t]={'Ticker':t,'狀態':'待續掃','原因':audit.get(t,{}).get('原因','本輪暫停；保留已完成結果，稍後按續掃')}
     result_audit=pd.DataFrame([audit[t] for t in tickers])
     result_audit.attrs['batches']=state['batches']
     result_audit.attrs['pending']=len(tickers)-len(done)
     result_audit.attrs['checkpoint']=job
+    announce(f'本輪結束：已處理 {len(done)}/{len(tickers)}，待續掃 {len(tickers)-len(done)}')
+    result_audit.attrs['boundary_trace']=trace
     return list(rows.values()),result_audit,histories,expected
