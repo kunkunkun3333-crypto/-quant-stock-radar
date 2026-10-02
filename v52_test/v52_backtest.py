@@ -15,6 +15,9 @@ def align_benchmark(stock_index,benchmark_features):
     for col in aligned.select_dtypes(include='bool').columns:
         aligned[col]=aligned[col].astype('boolean')
     aligned.loc[ages>7,:]=np.nan
+    # 大盤缺損當日不得以前一日訊號取代。
+    gaps=pd.to_datetime(benchmark_features.attrs.get('missing_close_dates',[]))
+    aligned.loc[aligned.index.normalize().isin(gaps),:]=np.nan
     return aligned
 
 def technical_signals(f,benchmark_features,cfg=DEFAULT):
@@ -34,9 +37,12 @@ def summarize(events):
 def events_for_horizon(f,signal,horizon,start=0,end=None,cfg=DEFAULT):
     end=len(f) if end is None else end
     last_exit=-1;out=[]
+    gaps=pd.to_datetime(f.attrs.get('missing_close_dates',[]))
     for i in np.flatnonzero(signal.to_numpy()):
         if i<start or i+horizon>=end or i<=last_exit:continue
-        exit_i=i+horizon;path=f['Latest Price'].iloc[i:exit_i+1].to_numpy(float)
+        exit_i=i+horizon
+        if len(gaps) and ((gaps>f.index[i])&(gaps<=f.index[exit_i])).any():continue
+        path=f['Latest Price'].iloc[i:exit_i+1].to_numpy(float)
         base=path[0];last=path[-1]
         open_next=number(f.Open.iloc[i+1]);cost=cfg.roundtrip_cost_bps/10000
         net=last/open_next-1-cost if open_next is not None and open_next>0 else None

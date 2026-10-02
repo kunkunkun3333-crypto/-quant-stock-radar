@@ -41,7 +41,7 @@ def _load_history(ticker,period):
     if hasattr(yf,'config'):
         yf.config.network.retries=0;yf.config.debug.hide_exceptions=False
     raw=yf.Ticker(ticker).history(period=period,interval='1d',auto_adjust=True,repair=False,keepna=True,timeout=12)
-    h=extract_history(raw,ticker)
+    h=raw.copy() if raw is not None and not isinstance(raw.columns,pd.MultiIndex) else extract_history(raw,ticker)
     if h.empty:raise InvalidMarketData(f'{ticker}：未取得有效行情')
     from v52_engine import clean_history
     try:return clean_history(h)
@@ -54,9 +54,9 @@ def history_batch(tickers,period='10y'):
     result=HistoryBatch();errors=[]
     for ticker in dict.fromkeys(tickers):
         try:
-            cached=get_store().get('yahoo',f'history:v2:{ticker}:{period}',lambda:_load_history(ticker,period),DEFAULT.history_ttl,DEFAULT.fallback_max_age)
+            cached=get_store().get('yahoo',f'history:v3:{ticker}:{period}',lambda:_load_history(ticker,period),DEFAULT.history_ttl,DEFAULT.fallback_max_age)
             h=cached.value
-            h.attrs.update({'cache_status':cached.status,'fetched_at':cached.fetched_at,'warning':cached.warning,'source':'Yahoo adjusted daily'})
+            h.attrs.update({'cache_status':cached.status,'fetched_at':cached.fetched_at,'warning':'；'.join(x for x in [cached.warning,h.attrs.get('data_quality_warning','')] if x),'source':'Yahoo adjusted daily'})
             result[ticker]=h
         except Exception as exc:
             result.errors[ticker]=str(exc);errors.append(f'{ticker}: {exc}')
@@ -119,7 +119,7 @@ def _scan(tickers,metadata,benchmarks,progress=None,min_tw_lots=0,min_us_cap=0,c
             try:
                 if t not in downloaded:raise ValueError(getattr(downloaded,'errors',{}).get(t,batch_error))
                 h=downloaded[t];f=features(h)
-                if h.attrs.get('warning'):notes.append('行情備援：'+h.attrs['warning'])
+                if h.attrs.get('warning'):notes.append('行情提示：'+h.attrs['warning'])
                 if len(f)<cfg.minimum_bars:raise ValueError(f'歷史僅{len(f)}筆，至少需要{cfg.minimum_bars}筆')
                 r=f.iloc[-1].to_dict();histories[t]=h
                 try:fund=fundamentals(t)

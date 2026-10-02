@@ -29,11 +29,21 @@ def clean_history(hist):
     for k in ['Open','High','Low','Close','Volume']:
         h[k]=pd.to_numeric(h[k],errors='coerce') if k in h else np.nan
     h=h.replace([np.inf,-np.inf],np.nan)
-    # 缺損日不刪掉，避免把5交易日偷偷變成5個非缺值資料點。
+    # 僅容忍歷史孤立異常；原始缺損日期留在attrs，供快取與回測使用。
     invalid=h.Close.isna()|(h.Close<=0)
     if invalid.any():
-        dates=', '.join(str(d.date()) for d in h.index[invalid][:5])
-        raise ValueError(f'收盤序列含缺值或非正數，共{int(invalid.sum())}/{len(h)}筆；日期示例：{dates}；不能可靠計算交易日期，未補值或刪除缺損日')
+        dates=[str(d.date()) for d in h.index[invalid]]
+        ratio=float(invalid.mean())
+        adjacent=bool((invalid & invalid.shift(1,fill_value=False)).any())
+        recent=bool(invalid.iloc[-60:].any())
+        if ratio>=0.01 or adjacent or recent:
+            reason='比例達1%' if ratio>=0.01 else '連續缺損' if adjacent else '最近60筆含缺損'
+            raise ValueError(f'收盤序列含缺值或非正數，共{int(invalid.sum())}/{len(h)}筆；日期示例：{", ".join(dates[:5])}；{reason}，未補值')
+        prior=h.attrs.get('missing_close_dates',[])
+        h.attrs['missing_close_dates']=sorted(set(prior+dates))
+        h.attrs['data_quality_warning']=('Data Quality Warning：已移除歷史孤立異常收盤日期：'
+            +', '.join(h.attrs['missing_close_dates'])+'；未補價；缺口後指標重新暖機，跨缺口回測排除')
+        h=h.loc[~invalid].copy()
     h.loc[h.Volume<0,'Volume']=np.nan
     for col in ['Open','High','Low']: h.loc[h[col]<=0,col]=np.nan
     bad=(h.High<h.Low)|(h.High<h.Close)|(h.Low>h.Close)
@@ -53,7 +63,20 @@ def wilder_rsi(close,period=14):
     return result
 
 def features(hist):
-    h=clean_history(hist); c=h.Close; f=pd.DataFrame(index=h.index)
+    h=clean_history(hist)
+    gaps=pd.to_datetime(h.attrs.get('missing_close_dates',[]))
+    if len(gaps):
+        # 每段独立初始化遞迴與滾動指標，不把缺口兩側視為相鄰交易日。
+        groups=np.searchsorted(gaps.to_numpy(),h.index.to_numpy(),side='right')
+        parts=[_features_contiguous(part) for _,part in h.groupby(groups)]
+        f=pd.concat(parts).sort_index()
+    else:
+        f=_features_contiguous(h)
+    f.attrs.update(h.attrs)
+    return f
+
+def _features_contiguous(h):
+    c=h.Close; f=pd.DataFrame(index=h.index)
     f['Latest Price']=c;f['Open']=h.Open
     for n in (20,60,200): f[f'MA{n}']=c.rolling(n,min_periods=n).mean()
     f['MA20 Slope']=f.MA20.pct_change(5,fill_method=None)*100
