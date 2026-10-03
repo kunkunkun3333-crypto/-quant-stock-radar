@@ -119,6 +119,16 @@ def _load_history(ticker,period):
         return cleaned
     except ValueError as exc:raise InvalidMarketData(f'{ticker}：{exc}') from exc
 
+def _load_history_delta(ticker,start,end):
+    if hasattr(yf,'config'):
+        yf.config.network.retries=0;yf.config.debug.hide_exceptions=False
+    try:
+        with BoundedSession(impersonate='chrome') as session:
+            return yf.Ticker(ticker,session=session).history(start=start,end=end,interval='1d',auto_adjust=True,repair=False,keepna=True,timeout=12)
+    except Exception as exc:
+        if type(exc).__name__=='YFPricesMissingError':raise EmptyMarketData(str(exc)) from exc
+        raise
+
 class HistoryBatch(dict):
     def __init__(self):super().__init__();self.errors={}
 
@@ -127,7 +137,9 @@ def history_batch(tickers,period='10y'):
     for number_,ticker in enumerate(dict.fromkeys(tickers),1):
         _activity(f'下載行情 {number_}/{len(tickers)}：{ticker}')
         try:
-            cached=get_store().get('yahoo',f'history:v4:{ticker}:{period}',lambda:_load_history(ticker,period),DEFAULT.history_ttl,DEFAULT.fallback_max_age)
+            from v52_history import history
+            from v52_engine import clean_history
+            cached=history(get_store(),ticker,period,_load_history,_load_history_delta,prepare_latest_bar,clean_history,DEFAULT.fallback_max_age)
             h=cached.value
             h.attrs.update({'cache_status':cached.status,'fetched_at':cached.fetched_at,'warning':'；'.join(x for x in [cached.warning,h.attrs.get('data_quality_warning','')] if x),'source':'Yahoo adjusted daily'})
             result[ticker]=h

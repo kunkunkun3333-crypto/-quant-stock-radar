@@ -20,7 +20,7 @@ st.set_page_config(page_title='Quant Stock Radar V5.2',page_icon='📊',layout='
 st.title('📊 Quant Stock Radar V5.2')
 if os.environ.get('V52_TEST_SITE')=='1':st.warning('🧪 V5.2 獨立測試站｜正式V5.1不受影響｜尚未通過正式部署驗收')
 st.caption('V5.2 – Quant Decision System｜量化投資決策輔助系統')
-st.caption(f'測試組建：{DEFAULT.model_version}｜批次續掃修正 resume-v2')
+st.caption(f'測試組建：{DEFAULT.model_version}｜增量行情／動態批次 performance-v1')
 st.info('實驗模型：總分權重尚未完成完整多因子樣本外驗證。歷史統計只涵蓋技術＋大盤訊號；高信心標的另需完整模型驗證資格，目前不放行。')
 if st.session_state.get('v52_version')!=DEFAULT.model_version:
     for key in ['v52_result','v52_audit','v52_hist','v52_rows','v52_expected','v52_bt','v52_market','v52_bench','v52_scan_time']:st.session_state.pop(key,None)
@@ -57,7 +57,7 @@ with st.sidebar:
     min_us=st.number_input('美股最低市值（十億美元）',0.,1000.,10.,1.)*1e9
     top_n=st.slider('排行榜顯示檔數',10,2000,100,10)
     bt_n=st.slider('掃描後回測前N名',0,30,5,help='回測不影響總分；未回測股票顯示N/A，可在個股頁按需執行。挑選目前高分股票回測有選樣偏誤。')
-    st.caption('技術指標固定MA20/60、RSI14；所有分數權重與門檻集中於v52_config.py。每批25檔、批間休息5秒；每批最多120秒網路預算、每輪最多約600秒。暫停後按續掃，已完成結果保存6小時。')
+    st.caption('技術指標固定MA20/60、RSI14；所有分數權重與門檻集中於v52_config.py。健康回應時每批25→50→100檔，批間休息5秒；網路預算隨批次檔數調整、每輪最多約600秒。暫停後按續掃，已完成結果保存6小時。')
     if st.button('更新公司清單及行情快取'):
         get_store().expire('checkpoint:')
         st.session_state.pop('v52_scan_context',None)
@@ -102,8 +102,21 @@ with st.expander('官方收盤／本益比備援查詢（不計算技術分數�
         if not universe.empty and not snap.empty:snap=universe[['Ticker','公司名稱']].merge(snap,on='Ticker',how='left')
         table(snap);table(source_audit)
 with st.expander('資料快取與來源狀態'):
-    st.caption('逐檔磁碟快取：行情6小時、基本面24小時。限流冷卻30分鐘；最多沿用7日內已取得快照並標記備援。重部署可能清除Cloud本機磁碟，這不是永久資料庫。')
+    st.caption('歷史庫不因TTL刪除；按市場收盤後更新時段增量下載。同時段成功取得後沿用快取。基本面24小時；真正限流冷卻30分鐘。Cloud本機檔案不保證永久保存，請保留備份；V52_CACHE_DIR可指向持久磁碟。')
     st.json(get_store().status())
+    from v52_history import export_archive,import_archive
+    metrics=get_store().metrics
+    st.write({label:metrics.get(key,0) for label,key in [('行情快取命中','history_cache_hit'),('增量更新','history_incremental'),('完整下載','history_full'),('還原基準重抓','history_rebase')]})
+    st.caption('統計為本程序累計；每批統計另見下方。備份只含行情與基本面，不含續掃任務。')
+    if st.button('準備下載行情備份'):
+        st.session_state.v52_archive=export_archive(get_store())
+    if 'v52_archive' in st.session_state:
+        st.download_button('下載行情備份 ZIP',st.session_state.v52_archive,'v52_history_backup.zip','application/zip')
+    backup=st.file_uploader('還原先前下載的行情備份',type=['zip'])
+    if backup is not None and st.button('匯入行情備份'):
+        try:st.success(f'已檢查匯入 {import_archive(get_store(),backup.getvalue())} 筆快取，保留較新的既有資料。')
+        except Exception as exc:st.error(f'備份匯入失敗：{exc}')
+
 
 if st.button('單獨更新大盤'):
     bench,status=benchmark_refresh(['TW' if m=='台股' else 'US' for m in markets])

@@ -50,7 +50,7 @@ class Store:
         self.path=Path(path);self.path.parent.mkdir(parents=True,exist_ok=True)
         self.retries=retries;self.backoff=backoff
         self.min_interval=min_interval;self.cooldown=cooldown;self.clock=clock;self.sleep=sleep
-        self.lock=threading.RLock();self.metrics={'network_calls':0,'fresh_hits':0,'stale_hits':0,'blocked':0,'errors':0,'retries':0,'rate_limits':0,'empty_responses':0}
+        self.lock=threading.RLock();self.metrics={'network_calls':0,'fresh_hits':0,'stale_hits':0,'blocked':0,'errors':0,'retries':0,'rate_limits':0,'empty_responses':0,'history_cache_hit':0,'history_incremental':0,'history_full':0,'history_rebase':0}
         with self.connect() as c:
             c.execute('CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, fetched REAL, payload BLOB)')
             c.execute('CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT)')
@@ -126,7 +126,8 @@ class Store:
                     self._set_state('failure:'+key,{'until':self.clock()+300,'reason':reason})
                     return self._fallback(cached,max_stale,reason)
                 count=state.get('failures',0)+1
-                cooldown=self.cooldown if is_rate_limit(exc) else 300 if count>=3 else 0
+                cooldown=self.cooldown if is_rate_limit(exc) else 0
+                # 非429失敗限縮到單檔，不再因3個空回應封鎖整個Yahoo五分鐘。
                 self._set_state(provider,{**state,'failures':count,'until':self.clock()+cooldown,'reason':reason})
                 self._set_state('failure:'+key,{'until':self.clock()+300,'reason':reason})
                 return self._fallback(cached,max_stale,reason)

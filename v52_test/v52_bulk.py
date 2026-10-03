@@ -84,15 +84,29 @@ def scan_resumable(tickers,metadata,benchmarks,progress=None,min_tw_lots=0,min_u
     for t in tickers:
         m=metadata.get(t,{});k=(m.get('Market','TW' if t.endswith(('.TW','.TWO')) else 'US'),m.get('Industry','N/A'))
         expected[k]=expected.get(k,0)+1
-    for offset in range(0,len(pending),BATCH_SIZE):
+    offset=0
+    size=BATCH_SIZE
+    if state['batches']:
+        previous=state['batches'][-1]
+        if not any(previous.get(k,0) for k in ['失敗','待續掃','限流回應','空回應','重試','下載錯誤']):
+            size=min(100,max(BATCH_SIZE,previous['本批檔數']*2))
+    while offset<len(pending):
         if time.monotonic()-start>=round_seconds:
             announce('本輪時間預算已到，保留結果待續掃');break
         provider=store._state('yahoo')
         if provider.get('until',0)>store.clock():
             announce(f"Yahoo冷卻中，約{int(provider['until']-store.clock())}秒後可續掃");break
-        batch=pending[offset:offset+BATCH_SIZE];before=dict(store.metrics)
+        batch=pending[offset:offset+size];before=dict(store.metrics)
         remaining=max(.001,round_seconds-(time.monotonic()-start))
-        local_cfg=replace(cfg,batch_size=BATCH_SIZE,scan_network_budget_seconds=min(cfg.scan_network_budget_seconds,remaining))
+        # 大批次預留兩類資料下載時間；本輪不足以完成預估批次時先保存退出。
+        per_stock=6.
+        if state['batches']:
+            last=state['batches'][-1]
+            per_stock=max(1.,last.get('耗時秒',6.*last['本批檔數'])/max(1,last['本批檔數'])*1.25)
+        if offset and remaining<len(batch)*per_stock:
+            announce('本輪剩餘時間不足以完成下一批；已保留結果，請按接續上次掃描');break
+        local_cfg=replace(cfg,batch_size=size,scan_network_budget_seconds=min(max(cfg.scan_network_budget_seconds*size/BATCH_SIZE,len(batch)*per_stock),remaining))
+        batch_started=time.monotonic()
         batch_number=len(state['batches'])+1
         announce(f'第 {batch_number} 批開始：本批 {len(batch)} 檔，累計已完成 {len(done)}/{len(tickers)}')
         def update(i,n,t):
@@ -108,12 +122,14 @@ def scan_resumable(tickers,metadata,benchmarks,progress=None,min_tw_lots=0,min_u
             t=item['Ticker'];audit[t]=_plain(item)
             if item['狀態']!='待續掃':done.add(t)
         counts=a['狀態'].value_counts()
-        summary={'批次':len(state['batches'])+1,'本批檔數':len(batch),'成功':int(counts.get('成功分析',0)),
+        summary={'批次':len(state['batches'])+1,'本批檔數':len(batch),'耗時秒':round(time.monotonic()-batch_started,3),'成功':int(counts.get('成功分析',0)),
                  '失敗':int(counts.get('資料失敗',0)),'排除':int(counts.get('條件排除',0)),
                  '待續掃':int(counts.get('待續掃',0)),
                  '限流回應':store.metrics['rate_limits']-before['rate_limits'],
                  '空回應':store.metrics['empty_responses']-before['empty_responses'],
-                 '重試':store.metrics['retries']-before['retries']}
+                 '重試':store.metrics['retries']-before['retries'],
+                 '下載錯誤':store.metrics['errors']-before['errors'],
+                 **{name:store.metrics.get(metric,0)-before.get(metric,0) for name,metric in [('快取命中','history_cache_hit'),('增量更新','history_incremental'),('完整下載','history_full'),('還原基準重抓','history_rebase')]}}
         state['batches'].append(summary)
         save_position()
         checkpoint_values[key]=state
@@ -122,7 +138,10 @@ def scan_resumable(tickers,metadata,benchmarks,progress=None,min_tw_lots=0,min_u
         if batch_report:batch_report(pd.DataFrame(state['batches']))
         if summary['待續掃'] or store._state('yahoo').get('until',0)>store.clock():
             announce('本批有待續掃或Yahoo冷卻，已暫停；請稍後按接續上次掃描');break
-        if offset+BATCH_SIZE<len(pending):
+        offset+=len(batch)
+        healthy=not any(summary[k] for k in ['失敗','待續掃','限流回應','空回應','重試','下載錯誤'])
+        size=min(100,size*2) if healthy else BATCH_SIZE
+        if offset<len(pending):
             if time.monotonic()-start+BATCH_COOLDOWN>=round_seconds:
                 announce('本輪時間預算不足，已保存；請按接續上次掃描');break
             for seconds in range(BATCH_COOLDOWN,0,-1):
