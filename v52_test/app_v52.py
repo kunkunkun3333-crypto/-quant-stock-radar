@@ -23,7 +23,7 @@ st.set_page_config(page_title='Quant Stock Radar V5.2',page_icon='📊',layout='
 st.title('📊 Quant Stock Radar V5.2')
 if os.environ.get('V52_TEST_SITE')=='1':st.warning('🧪 V5.2 獨立測試站｜正式V5.1不受影響｜尚未通過正式部署驗收')
 st.caption('V5.2 – Quant Decision System｜量化投資決策輔助系統')
-st.caption(f'測試組建：{DEFAULT.model_version}｜保留行情快取重新分析 rescan-v1')
+st.caption(f'測試組建：{DEFAULT.model_version}｜台股清單來源容錯 universe-v1')
 st.info('實驗模型：總分權重尚未完成完整多因子樣本外驗證。歷史統計只涵蓋技術＋大盤訊號；高信心標的另需完整模型驗證資格，目前不放行。')
 if st.session_state.get('v52_version')!=DEFAULT.model_version:
     for key in ['v52_result','v52_audit','v52_hist','v52_rows','v52_expected','v52_bt','v52_market','v52_bench','v52_scan_time']:st.session_state.pop(key,None)
@@ -75,9 +75,16 @@ with st.expander('指標中文解讀／模型設定與限制'):
     st.caption('所有模型參數在測試前固定，沒有為了提高勝率而調參。AI／記憶體等細分主題待可靠分類來源。')
 
 universe=pd.DataFrame();blocked=False
+if '台股' in markets and st.button('重新取得台股清單（保留成功備援）'):
+    get_store().expire('universe:')
+    catalog.clear()
 if '台股' in markets and not (st.session_state.get('v52_resume_button',False) and st.session_state.get('v52_scan_context')):
     try:
         with st.spinner('讀取上市櫃清單…'):full=catalog()
+        for warning in full.attrs.get('universe_warnings',[]):st.warning(warning)
+        if full.attrs.get('universe_sources'):
+            with st.expander('台股清單來源與版本時間',expanded=bool(full.attrs.get('universe_warnings'))):
+                st.dataframe(pd.DataFrame(full.attrs['universe_sources']),hide_index=True)
         universe=full.copy()
         if mode=='上市櫃科技股（完整清單）':universe=full[full['產業'].isin(sectors)].copy()
         if mode=='示範台股10檔':universe=full[full.Ticker.isin(legacy.DEFAULT_TW)].copy()

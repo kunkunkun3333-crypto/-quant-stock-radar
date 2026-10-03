@@ -33,13 +33,10 @@ class BoundedSession(curl_requests.Session):
         kwargs['timeout']=min(float(timeout),12.) if timeout is not None else 12.
         return super().request(method,url,*args,**kwargs)
 
-@st.cache_data(ttl=21600,show_spinner=False)
+@st.cache_data(ttl=60,show_spinner=False)
 def catalog():
-    data,errors=fetch_catalog()
-    if errors:raise RuntimeError('；'.join(errors))
-    # 不把非電子公司都混為同一產業；仍保留官方代碼。
-    data['產業']=[INDUSTRIES.get(str(c),f'官方產業分類 {c}') for c in data['產業代碼']]
-    return data
+    from v52_universe import fetch_universe
+    return fetch_universe()
 
 def extract_history(raw,ticker):
     if raw is None or raw.empty:return pd.DataFrame()
