@@ -23,7 +23,7 @@ st.set_page_config(page_title='Quant Stock Radar V5.2',page_icon='📊',layout='
 st.title('📊 Quant Stock Radar V5.2')
 if os.environ.get('V52_TEST_SITE')=='1':st.warning('🧪 V5.2 獨立測試站｜正式V5.1不受影響｜尚未通過正式部署驗收')
 st.caption('V5.2 – Quant Decision System｜量化投資決策輔助系統')
-st.caption(f'測試組建：{DEFAULT.model_version}｜台股清單來源容錯 universe-v1')
+st.caption(f'測試組建：{DEFAULT.model_version}｜本輪效能統計 perf-ui-v1')
 st.info('實驗模型：總分權重尚未完成完整多因子樣本外驗證。歷史統計只涵蓋技術＋大盤訊號；高信心標的另需完整模型驗證資格，目前不放行。')
 if st.session_state.get('v52_version')!=DEFAULT.model_version:
     for key in ['v52_result','v52_audit','v52_hist','v52_rows','v52_expected','v52_bt','v52_market','v52_bench','v52_scan_time']:st.session_state.pop(key,None)
@@ -218,9 +218,9 @@ if start_clicked or resume_clicked or rescan_clicked:
                 except Exception as exc:st.warning(f'{t} 回測N/A：{exc}')
             result=finalize(rows,expected,bt)
         st.session_state.update(v52_result=result,v52_audit=audit,v52_hist=hist,v52_rows=rows,v52_expected=expected,v52_bt=bt,v52_market=status,v52_bench=bench,v52_scan_time=datetime.now(ZoneInfo('Asia/Taipei')).strftime('%Y-%m-%d %H:%M:%S'))
-        st.session_state.v52_run_stats={'執行ID':run_id,'模式':'重新分析（保留行情快取）' if rescan_clicked else '接續' if resume_clicked else '開始掃描',
+        st.session_state.v52_run_stats={'schema':2,'執行ID':run_id,'模式':'重新分析（保留行情快取）' if rescan_clicked else '接續' if resume_clicked else '開始掃描',
             '本輪耗時秒':round(time.perf_counter()-run_started,2),'本輪實際分析檔數':analyzed[0],
-            **{label:get_store().metrics.get(key,0)-metrics_before.get(key,0) for label,key in [('Cache hit','history_cache_hit'),('Incremental update','history_incremental'),('Full download','history_full')]},
+            **{label:get_store().metrics.get(key,0)-metrics_before.get(key,0) for label,key in [('Cache hit','history_cache_hit'),('Incremental update','history_incremental'),('Full download','history_full'),('Download errors','errors'),('Retry','retries')]},
             'batches':audit.attrs.get('batches',[])[first_batch[0]-1:] if first_batch[0] is not None else []}
         remaining=audit.attrs.get('pending',0)
         bar.progress((len(tickers)-remaining)/max(1,len(tickers)),text=f'本輪結束：已處理 {len(tickers)-remaining}/{len(tickers)}、待續掃 {remaining}')
@@ -242,15 +242,26 @@ if 'v52_result' in st.session_state:
     st.metric('待續掃（非資料失敗）',int(counts.get('待續掃',0)))
     if audit.attrs.get('boundary_trace'):
         with st.expander('批次切換紀錄'):st.dataframe(pd.DataFrame(audit.attrs['boundary_trace']),hide_index=True)
+    st.subheader('本輪效能統計')
     stats=st.session_state.get('v52_run_stats')
-    if stats:
-        st.subheader('本輪重新量測統計')
-        st.json({k:v for k,v in stats.items() if k!='batches'})
-        st.caption('本輪數值為按鈕執行前後差額；不包含之前取得的大盤快照。頁面rerun保留本次量測，不觸發新掃描。')
-        if stats['batches']:
-            with st.expander('每批處理統計（僅本輪）',expanded=True):st.dataframe(pd.DataFrame(stats['batches']),hide_index=True)
-        elif stats['本輪實際分析檔數']==0:
-            st.info('本輪未重新分析股票。若要驗證行情快取，請按「重新掃描同一股票池（保留行情快取）」。')
+    current=stats if stats and stats.get('schema')==2 else {}
+    hits=current.get('Cache hit');incremental=current.get('Incremental update');full_count=current.get('Full download')
+    denominator=sum(current.get(k,0) for k in ['Cache hit','Incremental update','Full download'])
+    hit_rate=f'{100*hits/denominator:.1f}%' if current and denominator else 'N/A'
+    labels=['本輪總耗時','快取命中數','增量更新數','完整下載數','下載錯誤數','Retry 次數','Cache hit rate']
+    values=[f"{current['本輪耗時秒']:.2f} 秒" if current else 'N/A',hits,incremental,full_count,current.get('Download errors'),current.get('Retry'),hit_rate]
+    for col,label,value in zip(st.columns(4),labels[:4],values[:4]):col.metric(label,'N/A' if value is None else value)
+    for col,label,value in zip(st.columns(3),labels[4:],values[4:]):col.metric(label,'N/A' if value is None else value)
+    columns=['批次','本批檔數','耗時秒','快取命中','增量更新','完整下載','下載錯誤','重試']
+    st.markdown('**每批處理統計（僅本輪）**')
+    st.dataframe(pd.DataFrame(current.get('batches',[])).reindex(columns=columns),hide_index=True)
+    if current:
+        st.caption(f"執行 ID：{current['執行ID']}｜{current['模式']}｜本輪實際分析 {current['本輪實際分析檔數']} 檔")
+        if current['本輪實際分析檔數']==0:
+            st.info('本輪未執行股票分析（可能僅讀取checkpoint或處於冷卻）。不沿用先前批次統計；請用「重新掃描同一股票池（保留行情快取）」驗證快取。')
+    else:
+        st.info('目前結果沒有新版的本輪量測資料，故顯示N/A。請按「重新掃描同一股票池（保留行情快取）」。')
+    st.caption('快取命中率＝行情快取命中÷（行情快取命中＋增量更新＋完整下載）；分母為0時顯示N/A。下載錯誤與Retry包含行情及基本面。本輪總耗時包含掃描、排行及自動回測，不含先前取得的大盤／股票清單。統計取本次執行前後差額，不沿用checkpoint歷史批次；頁面重繪只保留本次量測。')
     st.caption(f'掃描快照（台北）：{st.session_state.v52_scan_time}｜切换頁面不會重新下載股票池行情；修改設定後需重新掃描。')
     with st.expander('逐檔掃描紀錄／N/A原因'):
         table(audit);st.download_button('下載掃描紀錄',export(audit),'audit_v52.csv','text/csv')
