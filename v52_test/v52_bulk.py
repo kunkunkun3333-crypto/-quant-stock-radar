@@ -36,7 +36,7 @@ def benchmark_refresh(markets,cfg=DEFAULT):
     return bench,states
 
 def scan_resumable(tickers,metadata,benchmarks,progress=None,min_tw_lots=0,min_us_cap=0,
-                   cfg=DEFAULT,batch_report=None,round_seconds=ROUND_SECONDS,sleep=time.sleep,status=None,checkpoint_id=None):
+                   cfg=DEFAULT,batch_report=None,round_seconds=ROUND_SECONDS,sleep=time.sleep,status=None,checkpoint_id=None,max_batches=None,job_namespace=None):
     tickers=list(dict.fromkeys(tickers));store=get_store();start=time.monotonic()
     trace=[]
     def announce(message):
@@ -45,6 +45,7 @@ def scan_resumable(tickers,metadata,benchmarks,progress=None,min_tw_lots=0,min_u
     announce('讀取續掃紀錄')
     benchmark_id={m:(str(h.index[-1]),float(h.Close.iloc[-1]),h.attrs.get('cache_status')=='stale') if h is not None and not h.empty else None for m,h in benchmarks.items()}
     identity=[tickers,metadata,benchmark_id,min_tw_lots,min_us_cap,asdict(cfg),'bulk-v1']
+    if job_namespace is not None:identity.append(job_namespace)
     job=checkpoint_id or hashlib.sha256(json.dumps(identity,sort_keys=True,default=str).encode()).hexdigest()
     key='checkpoint:'+job;cached=store.read(key)
     valid=cached and not store._state('expired:'+key).get('expired') and time.time()-cached.value.get('created_at',0)<CHECKPOINT_TTL
@@ -84,6 +85,7 @@ def scan_resumable(tickers,metadata,benchmarks,progress=None,min_tw_lots=0,min_u
     for t in tickers:
         m=metadata.get(t,{});k=(m.get('Market','TW' if t.endswith(('.TW','.TWO')) else 'US'),m.get('Industry','N/A'))
         expected[k]=expected.get(k,0)+1
+    completed_batches=0
     offset=0
     size=BATCH_SIZE
     if state['batches']:
@@ -136,6 +138,8 @@ def scan_resumable(tickers,metadata,benchmarks,progress=None,min_tw_lots=0,min_u
         store.put_many(checkpoint_values);store._set_state('expired:'+key,{})
         announce(f'第 {batch_number} 批checkpoint已保存')
         if batch_report:batch_report(pd.DataFrame(state['batches']))
+        completed_batches+=1
+        if max_batches is not None and completed_batches>=max_batches:break
         if summary['待續掃'] or store._state('yahoo').get('until',0)>store.clock():
             announce('本批有待續掃或Yahoo冷卻，已暫停；請稍後按接續上次掃描');break
         offset+=len(batch)

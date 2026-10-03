@@ -6,6 +6,7 @@ import math
 import time
 import re
 import uuid
+import v52_auto as auto
 from v52_cache import get_store
 from v52_bulk import scan_resumable,benchmark_refresh,limited_universe
 from v52_official import snapshots
@@ -23,7 +24,7 @@ st.set_page_config(page_title='Quant Stock Radar V5.2',page_icon='📊',layout='
 st.title('📊 Quant Stock Radar V5.2')
 if os.environ.get('V52_TEST_SITE')=='1':st.warning('🧪 V5.2 獨立測試站｜正式V5.1不受影響｜尚未通過正式部署驗收')
 st.caption('V5.2 – Quant Decision System｜量化投資決策輔助系統')
-st.caption(f'測試組建：{DEFAULT.model_version}｜本輪效能統計 perf-ui-v1')
+st.caption(f'測試組建：{DEFAULT.model_version}｜背景自動掃描 auto-v1')
 st.info('實驗模型：總分權重尚未完成完整多因子樣本外驗證。歷史統計只涵蓋技術＋大盤訊號；高信心標的另需完整模型驗證資格，目前不放行。')
 if st.session_state.get('v52_version')!=DEFAULT.model_version:
     for key in ['v52_result','v52_audit','v52_hist','v52_rows','v52_expected','v52_bt','v52_market','v52_bench','v52_scan_time']:st.session_state.pop(key,None)
@@ -144,9 +145,14 @@ def resume_cooldown():
         st.info('可以接續上次掃描；將從第一檔未完成股票繼續，不重跑已完成股票。')
 resume_cooldown()
 
+auto_token=st.query_params.get('scan_task') or st.session_state.get('v52_auto_token')
+active_task=auto.restore(auto_token) if auto_token else None
+auto_busy=bool(active_task and active_task.view()[0]['status'] in ('running','cooldown'))
 resume_clicked=st.button('▶ 接續上次掃描',key='v52_resume_button')
-rescan_clicked=st.button('🔄 重新掃描同一股票池（保留行情快取）')
-start_clicked=st.button('🚀 開始掃描',type='primary',disabled=blocked)
+if resume_clicked and active_task:
+    auto.command(auto_token,'resume');auto.ensure(auto_token);st.rerun()
+rescan_clicked=st.button('🔄 重新掃描同一股票池（保留行情快取）',disabled=auto_busy)
+start_clicked=st.button('🚀 開始掃描',type='primary',disabled=blocked or auto_busy)
 if start_clicked or resume_clicked or rescan_clicked:
     checkpoint_id=None
     if resume_clicked or rescan_clicked:
@@ -193,6 +199,10 @@ if start_clicked or resume_clicked or rescan_clicked:
         scan_min_tw=min_tw;scan_min_us=min_us
         context={'tickers':tickers,'meta':meta,'bench':bench,'status':status,'min_tw':min_tw,'min_us':min_us}
     st.session_state.v52_scan_context=context
+    if not resume_clicked:
+        token=auto.create(context)
+        st.session_state.v52_auto_token=token;st.query_params['scan_task']=token
+        auto.ensure(token);st.rerun()
     bar=st.progress(0,text='開始分批下載…')
     batch_display=st.empty()
     phase_display=st.empty()
@@ -227,6 +237,48 @@ if start_clicked or resume_clicked or rescan_clicked:
         st.success(f'已處理 {len(tickers)-remaining}/{len(tickers)}、待續掃 {remaining}')
         if remaining:resume_cooldown()
     except Exception as exc:st.error(f'掃描未完成：{exc}')
+
+@st.fragment(run_every='1s')
+def automatic_progress(token):
+    task=auto.ensure(token)
+    if task is None:
+        st.warning('此自動任務已無磁碟紀錄，請重新開始。');return
+    state,result=task.view()
+    total=state['total'];done=state['processed'];remaining=max(0,total-done)
+    phase={'running':'掃描中','cooldown':'冷卻中','paused':'已暫停','cancelled':'已取消','completed':'已完成','failed':'已停止，需檢查原因'}.get(state['status'],state['status'])
+    st.subheader('自動掃描進度')
+    st.progress(min(1.,state['progress']/max(1,total)),text=f"{state['progress']} / {total}｜{phase}")
+    seconds=max(0,math.ceil(state.get('next_retry_at',0)-task.store.clock()))
+    st.write(f"目前批次：{state['batch']} 批已保存｜{state['message']}")
+    if state['status']=='cooldown':st.info(f'冷卻中／剩餘 {seconds} 秒；結束後自動恢復，不需按續掃。')
+    stats=state['metrics']
+    for col,label,value in zip(st.columns(4),['成功','失敗','快取命中','完整下載'],[state['success'],state['failed'],stats['history_cache_hit'],stats['history_full']]):col.metric(label,value)
+    eta=(state['active_seconds']/done*remaining+seconds) if done else None
+    st.caption(f"預估剩餘：{eta/60:.1f} 分鐘（不含未來未知限流）" if eta is not None else '預估剩餘：累積第一批資料後顯示')
+    st.caption('成功／失敗以已保存批次為準。暫停與取消會先完成並保存目前批次；關閉頁面後背景仍可能繼續，須使用暫停或取消。Cloud程序或磁碟被清除時，無法保證持續執行。請保留帶scan_task的網址供重新連線恢復。')
+    a,b,c=st.columns(3)
+    if a.button('暫停掃描',disabled=state['status'] not in ('running','cooldown')):
+        auto.command(token,'paused');st.rerun()
+    if b.button('取消本輪掃描',disabled=state['status'] in auto.TERMINAL):
+        auto.command(token,'cancelled');st.rerun()
+    if c.button('恢復自動掃描',disabled=state['status'] not in ('paused','failed')):
+        auto.command(token,'resume');auto.ensure(token);st.rerun()
+    marker=(token,state['batch'],state['status'])
+    if result is not None and state['status'] in ('paused','cancelled','completed','failed') and st.session_state.get('v52_auto_delivered')!=marker:
+        rows,audit,hist,expected=result;context=auto.context_for(task)
+        bt={};ranked=finalize(rows,expected,bt)
+        if state['status']=='completed' and not ranked.empty:
+            for ticker in ranked.head(bt_n).Ticker:
+                market=next(r['Market'] for r in rows if r['Ticker']==ticker)
+                try:bt[ticker]=cached_backtest(ticker,hist[ticker],context['bench'].get(market))
+                except Exception as exc:st.warning(f'{ticker} 回測N/A：{exc}')
+            ranked=finalize(rows,expected,bt)
+        st.session_state.update(v52_result=ranked,v52_audit=audit,v52_hist=hist,v52_rows=rows,v52_expected=expected,v52_bt=bt,v52_market=context['status'],v52_bench=context['bench'],v52_scan_context=context,v52_scan_time=datetime.now(ZoneInfo('Asia/Taipei')).strftime('%Y-%m-%d %H:%M:%S'))
+        st.session_state.v52_run_stats={'schema':2,'執行ID':token[:12],'模式':'自動掃描任務（跨批次累計）','本輪耗時秒':round(task.store.clock()-state['created_at'],2),'本輪實際分析檔數':done,'Cache hit':stats['history_cache_hit'],'Incremental update':stats['history_incremental'],'Full download':stats['history_full'],'Download errors':stats['errors'],'Retry':stats['retries'],'batches':state['batches']}
+        st.session_state.v52_auto_delivered=marker
+        st.rerun()
+
+if auto_token:automatic_progress(auto_token)
 
 st.subheader('Market Status｜大盤環境')
 if 'v52_market' not in st.session_state:st.info('尚未掃描；大盤環境 N/A。')
