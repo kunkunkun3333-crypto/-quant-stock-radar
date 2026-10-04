@@ -23,6 +23,9 @@ def align_benchmark(stock_index,benchmark_features):
 
 def technical_signals(f,benchmark_features,cfg=DEFAULT):
     aligned=align_benchmark(f.index,benchmark_features)
+    stages={'技術指標有效':0,'大盤可用':0,'大盤Bull或Neutral':0,'上升趨勢':0,'Entry達門檻':0,'量比有效':0}
+    required=['Latest Price','MA20','MA60','MA20 Slope','MA60 Slope','RSI14','BIAS20','Return20','Volume Ratio']
+    missing={k:int(f[k].isna().sum()) if k in f else len(f) for k in required}
     signals=[];diagnostics={'歷史筆數':len(f),'大盤不可用':0,'大盤Bear':0,'非上升趨勢':0,'Entry不足':0,'量比缺失':0}
     for date,r in f.iterrows():
         market=regime(aligned.loc[date]) if not aligned.empty else 'N/A'
@@ -32,8 +35,19 @@ def technical_signals(f,benchmark_features,cfg=DEFAULT):
         diagnostics['非上升趨勢']+=int(t!='Bullish')
         diagnostics['Entry不足']+=int(e is None or e<cfg.historical_entry_threshold)
         diagnostics['量比缺失']+=int(number(r.get('Volume Ratio')) is None)
+        valid=all(number(r.get(k)) is not None for k in required)
+        stages['技術指標有效']+=int(valid)
+        valid=valid and market!='N/A';stages['大盤可用']+=int(valid)
+        valid=valid and market in ('Bull','Neutral');stages['大盤Bull或Neutral']+=int(valid)
+        valid=valid and t=='Bullish';stages['上升趨勢']+=int(valid)
+        valid=valid and e is not None and e>=cfg.historical_entry_threshold;stages['Entry達門檻']+=int(valid)
+        valid=valid and number(r.get('Volume Ratio')) is not None;stages['量比有效']+=int(valid)
         signals.append(e is not None and e>=cfg.historical_entry_threshold and t=='Bullish' and market in ('Bull','Neutral') and number(r.get('Volume Ratio')) is not None)
     result=pd.Series(signals,index=f.index,dtype=bool)
+    diagnostics['逐步剩餘日期數']=stages;diagnostics['技術欄位缺失數']=missing
+    diagnostics['指標階段說明']='逐步計數採全部所需指標有效；實際訊號仍沿用原Entry缺項重新配重，不變更條件'
+    diagnostics['大盤歷史筆數']=0 if benchmark_features is None else len(benchmark_features)
+    diagnostics['大盤對齊日期数']=int(aligned['Benchmark Date'].notna().sum()) if 'Benchmark Date' in aligned else 0
     diagnostics['符合訊號日數']=int(result.sum());result.attrs['diagnostics']=diagnostics
     return result
 
@@ -72,10 +86,16 @@ def backtest(hist,benchmark_hist,cfg=DEFAULT):
     f=features(hist);b=features(benchmark_hist) if benchmark_hist is not None and not benchmark_hist.empty else None
     signal=technical_signals(f,b,cfg)
     split=int(len(f)*(1-cfg.oos_fraction));enough=len(f)>=504
-    summaries={};train={};test={};all_events=[];excluded={}
+    summaries={};train={};test={};all_events=[];excluded={};forward={}
     for h in cfg.horizons:
+        mature=np.arange(len(f))+h<len(f)
+        forward[h]={'全歷史可計算forward日期數':int(mature.sum()),'訊號且已滿持有期':int((signal.to_numpy() & mature).sum())}
         e=events_for_horizon(f,signal,h,cfg=cfg);summaries[h]=summarize(e);all_events.append(e);excluded[h]=e.attrs['exclusions']
         # 訓練標籤必須在切分點前已成熟。跨切分樣本完全排除。
         train[h]=summarize(events_for_horizon(f,signal,h,end=split,cfg=cfg)) if enough else summarize(pd.DataFrame())
         test[h]=summarize(events_for_horizon(f,signal,h,start=split,cfg=cfg)) if enough else summarize(pd.DataFrame())
-    return {'summary':summaries,'train':train,'test':test,'events':pd.concat(all_events,ignore_index=True),'split_date':str(f.index[split].date()) if enough else None,'scope':SCOPE,'diagnostics':signal.attrs.get('diagnostics',{}),'exclusions':excluded,'status':('大盤資料缺失；無法建立訊號' if b is None else '無符合既有條件的歷史訊號' if not signal.any() else '回測完成；各持有期N<30的統計為N/A'),'full_model_validated':False,'cost_bps':cfg.roundtrip_cost_bps}
+    diagnostics=signal.attrs.get('diagnostics',{})
+    diagnostics.update({'輸入回測bar數':len(hist),'清洗後bar數':len(f),'原始下載bar數':hist.attrs.get('raw_bar_count'),'原始筆數說明':'輸入通常已由行情模組清洗；沒有原始計數時顯示N/A，不反推偽造','已知歷史缺口日期':hist.attrs.get('missing_close_dates',[]),'最新bar提示':hist.attrs.get('latest_bar_warning',''),'歷史起日':str(f.index[0]),'歷史迄日':str(f.index[-1]),'大盤起日':str(b.index[0]) if b is not None and len(b) else None,'大盤迄日':str(b.index[-1]) if b is not None and len(b) else None,'各持有期forward':forward,'Entry門檻':cfg.historical_entry_threshold})
+    zero_reason='大盤歷史缺失' if b is None else '大盤歷史在所有日期均不可用' if diagnostics['大盤不可用']==len(f) else '沒有符合原規則的歷史訊號' if not signal.any() else '訊號被持有期／重疊／缺口條件排除'
+    diagnostics['零樣本定位']=zero_reason if all(x['N']==0 for x in summaries.values()) else '有有效樣本；請逐持有期查看N'
+    return {'summary':summaries,'train':train,'test':test,'events':pd.concat(all_events,ignore_index=True),'split_date':str(f.index[split].date()) if enough else None,'scope':SCOPE,'diagnostics':diagnostics,'exclusions':excluded,'status':('大盤資料缺失；無法建立訊號' if b is None else '無符合既有條件的歷史訊號' if not signal.any() else '回測完成；各持有期N<30的統計為N/A'),'full_model_validated':False,'cost_bps':cfg.roundtrip_cost_bps}

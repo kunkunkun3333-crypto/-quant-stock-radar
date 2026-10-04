@@ -5,7 +5,7 @@ from v52_backtest import backtest,MIN_SAMPLES
 from v52_config import DEFAULT
 from v52_engine import number,quality
 from v52_cache import get_store
-VERSION='historical-validation-v2'
+VERSION='historical-validation-diagnostics-v3'
 
 def cached_backtest(ticker,hist,benchmark_hist,cfg=DEFAULT):
     # 完整資料及attrs入指紋：缺口、日期、行情修訂或設定變更均重算。

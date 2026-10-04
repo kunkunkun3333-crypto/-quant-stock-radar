@@ -1,6 +1,8 @@
 """沿用 V5.1 股票池→掃描→排行榜/個股/回測的 Streamlit 流程。"""
 from dataclasses import asdict
 import json
+import io
+import zipfile
 import os
 import math
 import time
@@ -337,6 +339,30 @@ if 'v52_result' in st.session_state:
                 st.session_state.v52_bt=pool_backtests(st.session_state.v52_rows,st.session_state.v52_hist,st.session_state.v52_bench)
                 st.session_state.v52_result=finalize(st.session_state.v52_rows,st.session_state.v52_expected,st.session_state.v52_bt)
                 st.rerun()
+            with st.expander('回測樣本逐階段診斷（全部成功標的）',expanded=True):
+                stages=[]
+                for ticker in df.Ticker:
+                    record=st.session_state.v52_bt.get(ticker,{})
+                    d=record.get('diagnostics',{});seq=d.get('逐步剩餘日期數',{})
+                    rec={'Ticker':ticker,'原始下載bar':d.get('原始下載bar數'),'輸入回測bar':d.get('輸入回測bar數'),'清洗後bar':d.get('清洗後bar數'),'技術指標有效':seq.get('技術指標有效'),'大盤歷史bar':d.get('大盤歷史筆數'),'大盤可用日期':seq.get('大盤可用'),'歷史訊號日期':d.get('符合訊號日數'),'定位':d.get('零樣本定位','請按上方驗證按鈕更新診斷')}
+                    for horizon in DEFAULT.horizons:
+                        fw=d.get('各持有期forward',{});hr=fw.get(horizon,fw.get(str(horizon),{}))
+                        rec[f'{horizon}D forward']=hr.get('訊號且已滿持有期')
+                        rec[f'{horizon}D最終N']=record.get('summary',{}).get(horizon,{}).get('N')
+                    stages.append(rec)
+                table(pd.DataFrame(stages))
+                st.caption('原始下載筆數未保存時顯示N/A；不把已清洗輸入當作原始Yahoo資料。詳細排除數在個股歷史驗證中。')
+                diagnostic={t:{k:v for k,v in r.items() if k!='events'} for t,r in st.session_state.v52_bt.items()}
+                st.download_button('下載全部回測診斷 JSON',json.dumps(diagnostic,ensure_ascii=False,default=str,indent=2).encode(),'backtest_diagnostics.json','application/json')
+                snapshot=io.BytesIO()
+                with zipfile.ZipFile(snapshot,'w',zipfile.ZIP_DEFLATED) as z:
+                    z.writestr('diagnostics.json',json.dumps(diagnostic,ensure_ascii=False,default=str))
+                    selected=list(dict.fromkeys([t for t in ['2330.TW','2308.TW','2317.TW'] if t in st.session_state.v52_hist]+df.Ticker.head(10).tolist()))
+                    for kind,frames in [('stock',{t:st.session_state.v52_hist[t] for t in selected}),('benchmark',st.session_state.v52_bench)]:
+                        for name,hist in frames.items():
+                            z.writestr(f'{kind}/{name}.json',hist.to_json(orient='split',date_format='iso'))
+                            z.writestr(f'{kind}/{name}.attrs.json',json.dumps(hist.attrs,ensure_ascii=False,default=str))
+                st.download_button('下載回測重現資料（已清洗行情＋大盤）',snapshot.getvalue(),'backtest_reproduction.zip','application/zip')
             with st.expander('全部標的5／20／60日驗證摘要'):
                 table(shown[['Ticker']+[f'{h}D {k}' for h in DEFAULT.horizons for k in ['N','Win Rate','Average Return','Median Return','Maximum Drawdown']]])
             st.caption('勝率以百分比顯示；N<30不展示績效，並列出實際樣本數。總分同分以股票代號排序。產業比較限本次股票池成功樣本，並非全市場排名。')
