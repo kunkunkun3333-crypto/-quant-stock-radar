@@ -18,13 +18,21 @@ import quant_stock_radar_v5 as legacy
 from v51_support import INDUSTRIES
 from v52_config import DEFAULT
 from v52_engine import number,features,finalize,confidence
-from v52_data import catalog,history_batch,fundamentals,cached_backtest,benchmark_state,scan
+from v52_data import catalog,history_batch,fundamentals,benchmark_state,scan
+
+from v52_validation import cached_backtest,validate_pool,display_results,quality_reason
+
+def pool_backtests(rows,hist,bench):
+    bar=st.progress(0.,text="歷史驗證準備中（使用已清洗行情，不重新下載）")
+    result=validate_pool(rows,hist,bench,lambda i,n,t:bar.progress(i/max(n,1),text=f"歷史驗證 {i}/{n}｜{t}"))
+    bar.empty()
+    return result
 
 st.set_page_config(page_title='Quant Stock Radar V5.2',page_icon='📊',layout='wide')
 st.title('📊 Quant Stock Radar V5.2')
 if os.environ.get('V52_TEST_SITE')=='1':st.warning('🧪 V5.2 獨立測試站｜正式V5.1不受影響｜尚未通過正式部署驗收')
 st.caption('V5.2 – Quant Decision System｜量化投資決策輔助系統')
-st.caption(f'測試組建：{DEFAULT.model_version}｜背景自動掃描 auto-v1')
+st.caption(f'測試組建：{DEFAULT.model_version}｜背景自動掃描 auto-v1｜全標的歷史驗證 v2')
 st.info('實驗模型：總分權重尚未完成完整多因子樣本外驗證。歷史統計只涵蓋技術＋大盤訊號；高信心標的另需完整模型驗證資格，目前不放行。')
 if st.session_state.get('v52_version')!=DEFAULT.model_version:
     for key in ['v52_result','v52_audit','v52_hist','v52_rows','v52_expected','v52_bt','v52_market','v52_bench','v52_scan_time']:st.session_state.pop(key,None)
@@ -45,7 +53,12 @@ def bt_table(summary):
     out=[]
     for horizon,r in summary.items():
         out.append({'交易日':horizon,'N':r['N'],'上漲':r['Up'],'下跌':r['Down'],'持平':r['Flat'],'Win Rate%':None if r['Win Rate'] is None else r['Win Rate']*100,'平均報酬%':None if r['Average Return'] is None else r['Average Return']*100,'中位報酬%':None if r['Median Return'] is None else r['Median Return']*100,'最差事件回撤%':None if r['Maximum Drawdown'] is None else r['Maximum Drawdown']*100,'最佳%':None if r['Best'] is None else r['Best']*100,'最差%':None if r['Worst'] is None else r['Worst']*100,'隔日開盤扣成本平均%':None if r['Net Average Return'] is None else r['Net Average Return']*100,'隔日開盤扣成本勝率%':None if r['Net Win Rate'] is None else r['Net Win Rate']*100,'可執行價格樣本N':r.get('Executable N',0),'註記':r['Warning']})
-    table(pd.DataFrame(out))
+    shown=pd.DataFrame(out)
+    for i,r in enumerate(out):
+        if r['N']<30:
+            for col in shown.columns:
+                if '%' in col:shown[col]=shown[col].astype(object);shown.at[i,col]=f"N/A｜樣本不足 N={r['N']}"
+    table(shown)
 
 with st.sidebar:
     st.header('掃描設定')
@@ -60,7 +73,7 @@ with st.sidebar:
     min_tw=st.number_input('台股20日均量最低（張）',0,100000,0,500)
     min_us=st.number_input('美股最低市值（十億美元）',0.,1000.,10.,1.)*1e9
     top_n=st.slider('排行榜顯示檔數',10,2000,100,10)
-    bt_n=st.slider('掃描後回測前N名',0,30,5,help='回測不影響總分；未回測股票顯示N/A，可在個股頁按需執行。挑選目前高分股票回測有選樣偏誤。')
+    st.caption('掃描完成後驗證全部成功標的的5／20／60日歷史訊號；結果按行情內容快取，不限前N名。')
     st.caption('技術指標固定MA20/60、RSI14；所有分數權重與門檻集中於v52_config.py。健康回應時每批25→50→100檔，批間休息5秒；網路預算隨批次檔數調整、每輪最多約600秒。暫停後按續掃，已完成結果保存6小時。')
     if st.button('更新公司清單及行情快取'):
         get_store().expire('checkpoint:')
@@ -220,12 +233,7 @@ if start_clicked or resume_clicked or rescan_clicked:
         rows,audit,hist,expected=scan_resumable(tickers,meta,bench,update_run,scan_min_tw,scan_min_us,batch_report=lambda frame:batch_display.dataframe(frame,hide_index=True),status=update_phase,checkpoint_id=checkpoint_id)
         bt={};result=finalize(rows,expected,bt)
         if not result.empty:
-            for t in result.head(bt_n).Ticker:
-                market=next(r['Market'] for r in rows if r['Ticker']==t)
-                try:
-                    bar.progress(1.,text=f'歷史技術訊號驗證：{t}')
-                    bt[t]=cached_backtest(t,hist[t],bench.get(market))
-                except Exception as exc:st.warning(f'{t} 回測N/A：{exc}')
+            bt=pool_backtests(rows,hist,bench)
             result=finalize(rows,expected,bt)
         st.session_state.update(v52_result=result,v52_audit=audit,v52_hist=hist,v52_rows=rows,v52_expected=expected,v52_bt=bt,v52_market=status,v52_bench=bench,v52_scan_time=datetime.now(ZoneInfo('Asia/Taipei')).strftime('%Y-%m-%d %H:%M:%S'))
         st.session_state.v52_run_stats={'schema':2,'執行ID':run_id,'模式':'重新分析（保留行情快取）' if rescan_clicked else '接續' if resume_clicked else '開始掃描',
@@ -268,10 +276,7 @@ def automatic_progress(token):
         rows,audit,hist,expected=result;context=auto.context_for(task)
         bt={};ranked=finalize(rows,expected,bt)
         if state['status']=='completed' and not ranked.empty:
-            for ticker in ranked.head(bt_n).Ticker:
-                market=next(r['Market'] for r in rows if r['Ticker']==ticker)
-                try:bt[ticker]=cached_backtest(ticker,hist[ticker],context['bench'].get(market))
-                except Exception as exc:st.warning(f'{ticker} 回測N/A：{exc}')
+            bt=pool_backtests(rows,hist,context['bench'])
             ranked=finalize(rows,expected,bt)
         st.session_state.update(v52_result=ranked,v52_audit=audit,v52_hist=hist,v52_rows=rows,v52_expected=expected,v52_bt=bt,v52_market=context['status'],v52_bench=context['bench'],v52_scan_context=context,v52_scan_time=datetime.now(ZoneInfo('Asia/Taipei')).strftime('%Y-%m-%d %H:%M:%S'))
         st.session_state.v52_run_stats={'schema':2,'執行ID':token[:12],'模式':'自動掃描任務（跨批次累計）','本輪耗時秒':round(task.store.clock()-state['created_at'],2),'本輪實際分析檔數':done,'Cache hit':stats['history_cache_hit'],'Incremental update':stats['history_incremental'],'Full download':stats['history_full'],'Download errors':stats['errors'],'Retry':stats['retries'],'batches':state['batches']}
@@ -326,8 +331,15 @@ if 'v52_result' in st.session_state:
         tabs=st.tabs(['🏆 完整排行','🔎 個股儀表板','🧪 歷史驗證','📋 資料品質'])
         cols=['Rank','Ticker','Company Name','Industry','Latest Price','Price Date','Total Score','Quality Score','Entry Score','Risk Score','20D Win Rate','20D N','Trend','Signal']
         with tabs[0]:
-            table(df[cols].head(top_n))
-            st.caption('勝率欄為0–1比例，0.60＝60%；未執行回測顯示N/A。總分同分以股票代號排序。產業比較限本次股票池成功樣本，並非全市場排名。')
+            shown=display_results(df,st.session_state.v52_bt,audit)
+            table(shown[cols+['20D 狀態','Quality 原因']].head(top_n))
+            if st.button('驗證目前全部成功標的（保留掃描與行情快取）'):
+                st.session_state.v52_bt=pool_backtests(st.session_state.v52_rows,st.session_state.v52_hist,st.session_state.v52_bench)
+                st.session_state.v52_result=finalize(st.session_state.v52_rows,st.session_state.v52_expected,st.session_state.v52_bt)
+                st.rerun()
+            with st.expander('全部標的5／20／60日驗證摘要'):
+                table(shown[['Ticker']+[f'{h}D {k}' for h in DEFAULT.horizons for k in ['N','Win Rate','Average Return','Median Return','Maximum Drawdown']]])
+            st.caption('勝率以百分比顯示；N<30不展示績效，並列出實際樣本數。總分同分以股票代號排序。產業比較限本次股票池成功樣本，並非全市場排名。')
         with tabs[1]:
             t=st.selectbox('選擇股票',df.Ticker.tolist(),format_func=lambda t:f"{t}｜{df.loc[df.Ticker==t,'Company Name'].iloc[0]}")
             row=df[df.Ticker==t].iloc[0].to_dict()
@@ -335,6 +347,7 @@ if 'v52_result' in st.session_state:
             st.caption(f"行情日期 {row['Price Date']}｜市場 {row['Market']}｜調整後價格 {fmt(row['Latest Price'],2)}（台股TWD／美股USD）")
             scores=['Total Score','Quality Score','Entry Score','Industry Strength','Institutional Score','Risk Score']
             for col,k in zip(st.columns(6),scores):col.metric(LABELS[k],fmt(row.get(k)))
+            st.caption(quality_reason(row, next((str(r.get('原因','')) for r in audit.to_dict('records') if r.get('Ticker')==t),'')))
             st.caption('Risk：0–33 🟢、34–66 🟡、67–100 🔴，越高代表模型風險越高。')
             st.write('趨勢：'+{'Bullish':'🟢 上升趨勢','Neutral':'🟡 盤整','Bearish':'🔴 下降趨勢'}.get(row['Trend'],'N/A'))
             rs=number(row.get('RSI14'));bias=number(row.get('BIAS20'));vr=number(row.get('Volume Ratio'));pe=number(row.get('P/E'));ref=number(row.get('Peer PE Median'))
@@ -375,19 +388,22 @@ if 'v52_result' in st.session_state:
                     st.rerun()
                 except Exception as exc:st.error(f'回測N/A：{exc}')
             if bt:
-                st.write(f'{t}｜{bt["status"]}');bt_table(bt['summary'])
+                st.write(f'{t}｜{bt["status"]}');bt_table(bt.get('summary',{}))
+                if bt.get('diagnostics'):
+                    st.write('訊號排除診斷（原因可重疊）');st.json(bt['diagnostics']);st.json(bt.get('exclusions',{}))
                 if bt['split_date']:
                     st.subheader('Out-of-Sample｜保留樣本檢查')
                     st.caption(f'切分日 {bt["split_date"]}：較早70%為研究區段，較新30%為保留區段；沒有用任何一段調參。訓練期的退出日期必須早於切分日，跨界樣本剔除。不是完整多因子樣本外證明。')
                     st.markdown('**較早區段**');bt_table(bt['train']);st.markdown('**較新保留區段**');bt_table(bt['test'])
                 else:st.info('歷史少於504筆，不提供樣本外切分統計。')
-                with st.expander('逐筆歷史事件'):table(bt['events'])
-                st.download_button('下載所選股票回測事件',export(bt['events']),f'{t}_events_v52.csv','text/csv')
+                if bt.get('events') is not None:
+                    with st.expander('逐筆歷史事件'):table(bt['events'])
+                    st.download_button('下載所選股票回測事件',export(bt['events']),f'{t}_events_v52.csv','text/csv')
             else:st.info('此股票尚未回測，數據為N/A。可按上方按鈕，不必重跑全市場掃描。')
         with tabs[3]:
             table(df[['Ticker','Data Completeness','Quality Coverage','Total Coverage','Price Date','Industry Sample','Industry Coverage','Industry Status']])
             st.caption('完整度檢查20項：技術8項、基本面9項、法人分数、產業強弱與產業分類。低於70%標示不足。數值缺失允許N/A，但不允許Infinity或將缺失偽裝0。')
-        st.download_button('下載完整結果 CSV',export(df),'quant_stock_v52_results.csv','text/csv')
+        st.download_button('下載完整結果 CSV',export(display_results(df,st.session_state.v52_bt,audit)),'quant_stock_v52_results.csv','text/csv')
         st.download_button('下載高信心標的 CSV',export(high),'quant_stock_v52_high_confidence.csv','text/csv')
         legacy_picks=df[(df['Golden Cross']==True)&df.BIAS20.between(-3,5)&(df['P/E'].isna()|df['P/E'].between(0,35,inclusive='neither'))]
         with st.expander('V5.1相容核心候選（不是V5.2高信心）'):
