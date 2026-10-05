@@ -87,13 +87,15 @@ def prepare_latest_bar(raw,ticker,now=None):
         h=h.iloc[:-1].copy()
         h.attrs['incomplete_latest_bar']={'date':str(date.date()),'reason':reason,'checked_at':current.isoformat()}
     if h.empty:raise InvalidMarketData(f'{ticker}：排除尾列後沒有已完成行情')
+    from v52_exchange_calendar import remove_confirmed_closure_blanks
+    h=remove_confirmed_closure_blanks(h,ticker)
     # 不迴圈裁尾；原倒數第2筆或更早的近期OHLC缺損仍拒絕。
     recent=h.tail(60).reindex(columns=['Open','High','Low','Close']).apply(pd.to_numeric,errors='coerce')
     bad=(~np.isfinite(recent.to_numpy())|(recent.to_numpy()<=0)).any(axis=1)
     if bad.any():
         dates=', '.join(str(d.date()) for d in recent.index[bad][:5])
         raise InvalidMarketData(f'{ticker}：最近60筆含缺損（排除最新候選bar後）：{dates}')
-    if warning:h.attrs['latest_bar_warning']=warning
+    if warning:h.attrs['latest_bar_warning']='；'.join(dict.fromkeys(x for x in (h.attrs.get('latest_bar_warning',''),warning) if x))
     return h
 
 def _load_history(ticker,period):
