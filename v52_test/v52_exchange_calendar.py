@@ -1,5 +1,7 @@
 """只辨識有雙交易所月報證據的孤立休市空列；不產生行情或改動回測。"""
 import json
+import logging
+from pathlib import Path
 import math
 import threading
 import time
@@ -9,6 +11,8 @@ import numpy as np
 import pandas as pd
 
 _LOCK = threading.RLock()
+_LOG = logging.getLogger(__name__)
+_MONTH_ORIGINS = {}
 _MONTHS = {}  # 僅官方月報查詢的程序內記憶，不讀寫行情 cache/checkpoint。
 
 
@@ -55,12 +59,37 @@ def _parse(payload, market, year, month):
     return frozenset(days)
 
 
+def _bundled_month(year, month):
+    """完整官方月報快照；沿用相同解析與雙市場驗證，不是日期例外名單。"""
+    try:
+        path = Path(__file__).with_name('v52_exchange_calendar_snapshots.json')
+        bundle = json.loads(path.read_text(encoding='utf-8'))
+        item = bundle['months'][f'{year:04d}-{month:02d}']
+        verified = pd.Timestamp(item['retrieved_at'])
+        if verified.tzinfo is None or verified <= pd.Timestamp(year=year, month=month, day=1, tz='UTC') + pd.offsets.MonthEnd(1):
+            return None
+        records = []
+        for market in ('TWSE', 'TPEX'):
+            report = item['reports'][market]
+            if report['source_url'] != _url(market, year, month):
+                return None
+            records.append((_parse(report['payload'], market, year, month), report['source_url']))
+        _MONTH_ORIGINS[(year, month)] = {'kind': 'verified_official_snapshot', 'retrieved_at': item['retrieved_at']}
+        return tuple(records)
+    except (OSError, ValueError, KeyError, TypeError, OverflowError):
+        return None
+
+
 def _month(year, month):
     key = (year, month)
     with _LOCK:
         cached = _MONTHS.get(key)
         if cached and time.monotonic() < cached[0]:
             return cached[1]
+        bundled = _bundled_month(year, month)
+        if bundled:
+            _MONTHS[key] = (time.monotonic() + 86400, bundled)
+            return bundled
         try:
             records = []
             for market in ('TWSE', 'TPEX'):
@@ -69,8 +98,10 @@ def _month(year, month):
                     payload = json.loads(response.read(1_000_001))
                 records.append((_parse(payload, market, year, month), url))
             result = tuple(records)
-        except Exception:
+            _MONTH_ORIGINS[key] = {'kind': 'live_official_reports', 'retrieved_at': pd.Timestamp.now(tz='UTC').isoformat()}
+        except Exception as exc:
             # 查詢失敗絕不等同休市；短暫記憶失敗，避免逐檔重複打官方 API。
+            _LOG.warning("休市核實失敗 %04d-%02d：%s: %s", year, month, type(exc).__name__, exc)
             result = None
         _MONTHS[key] = (time.monotonic() + (86400 if result else 60), result)
         return result
@@ -93,7 +124,8 @@ def closure_evidence(day, previous, following):
     return {'date': day.isoformat(), 'previous_session': previous.isoformat(),
             'next_session': following.isoformat(),
             'sources': [url for _, url in records],
-            'verified_at': pd.Timestamp.now(tz='UTC').isoformat()}
+            'verified_at': pd.Timestamp.now(tz='UTC').isoformat(),
+            'calendar_evidence': _MONTH_ORIGINS.get((day.year, day.month), {})}
 
 
 def remove_confirmed_closure_blanks(h, ticker):
@@ -102,7 +134,10 @@ def remove_confirmed_closure_blanks(h, ticker):
     cols = ['Open', 'High', 'Low', 'Close', 'Volume']
     if not all(c in h.columns for c in cols):
         return h  # 缺少欄位不等於原始 OHLCV 全空。
-    empty = h[cols].isna().all(axis=1).to_numpy()
+    # yfinance.history() 將缺失 Volume 正規化為 0；不補任何價格。
+    # OHLC 仍必須全為真正缺值；非零/未知字串成交量、部分OHLC缺值都不放行。
+    volume_empty = h['Volume'].isna() | h['Volume'].eq(0)
+    empty = (h[cols[:4]].isna().all(axis=1) & volume_empty).to_numpy()
     values = h[cols[:4]].apply(pd.to_numeric, errors='coerce').to_numpy()
     bad = (~np.isfinite(values) | (values <= 0)).any(axis=1)
     # 不因一列休市空列而掩蓋多筆近期缺損。
@@ -116,6 +151,8 @@ def remove_confirmed_closure_blanks(h, ticker):
         if evidence:
             removed.append(evidence)
     if not removed:
+        if empty[-60:].any():
+            _LOG.warning('%s：近期空白列未取得有效休市證據，維持 recent-60 拒絕', ticker)
         return h
     dates = [r['date'] for r in removed]
     out = h.loc[~h.index.strftime('%Y-%m-%d').isin(dates)].copy()
