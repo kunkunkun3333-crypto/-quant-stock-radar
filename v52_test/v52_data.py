@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import yfinance as yf
+import v53_fundamental_diagnostics as _fund_diag
 from v52_config import DEFAULT
 from v52_cache import get_store, network_budget, DataUnavailable, InvalidMarketData, EmptyMarketData
 from v52_engine import features,number,phase_a,regime,institutional_flow
@@ -148,9 +149,21 @@ def history_batch(tickers,period='10y'):
         exc=DataUnavailable('；'.join(errors[:2]) or '未提供股票代號');exc.ticker_errors=result.errors;raise exc
     return result
 
+class _FundamentalDiagnosticSession(BoundedSession):
+    """Observe only fundamental HTTP calls; preserve the existing request path."""
+    def request(self,method,url,*args,**kwargs):
+        event=_fund_diag.request_begin(url)
+        try:
+            response=super().request(method,url,*args,**kwargs)
+        except Exception as exc:
+            _fund_diag.request_end(event,exc=exc)
+            raise
+        _fund_diag.request_end(event,response=response)
+        return response
+
 def _load_fundamentals(ticker):
     if hasattr(yf,'config'):yf.config.network.retries=0;yf.config.debug.hide_exceptions=False
-    with BoundedSession(impersonate='chrome') as session:
+    with _FundamentalDiagnosticSession(impersonate='chrome') as session:
         info=yf.Ticker(ticker,session=session).info or {}
     if not info:raise EmptyMarketData(f'{ticker}：基本面空資料')
     if not any(k in info for k in ['trailingEps','trailingPE','returnOnEquity','revenueGrowth','marketCap']):raise InvalidMarketData(f'{ticker}：基本面未回傳有效欄位')
@@ -161,10 +174,25 @@ def _load_fundamentals(ticker):
     return out
 
 def fundamentals(ticker):
-    cached=get_store().get('yahoo',f'fundamental:v2:{ticker}',lambda:_load_fundamentals(ticker),DEFAULT.fundamental_ttl,DEFAULT.fallback_max_age)
-    out=dict(cached.value)
-    out.update({'Fundamental Cache':cached.status,'Fundamental Warning':cached.warning})
-    return out
+    diagnostic=_fund_diag.begin(ticker)
+    cached=None
+    failure=None
+    def load():
+        _fund_diag.loader_event(diagnostic)
+        try:return _load_fundamentals(ticker)
+        except Exception as exc:
+            _fund_diag.loader_event(diagnostic,exc)
+            raise
+    try:
+        cached=get_store().get('yahoo',f'fundamental:v2:{ticker}',load,DEFAULT.fundamental_ttl,DEFAULT.fallback_max_age)
+        out=dict(cached.value)
+        out.update({'Fundamental Cache':cached.status,'Fundamental Warning':cached.warning})
+        return out
+    except Exception as exc:
+        failure=exc
+        raise
+    finally:
+        _fund_diag.finish(diagnostic,cached,failure)
 
 # 相容原UI清理介面；僅標記需更新，不刪除備援快照或來源冷卻。
 history_batch.clear=lambda:get_store().expire('history:')
