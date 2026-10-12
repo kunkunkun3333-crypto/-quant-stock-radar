@@ -19,10 +19,28 @@ import streamlit as st
 import quant_stock_radar_v5 as legacy
 from v51_support import INDUSTRIES
 from v52_config import DEFAULT
-from v52_engine import number,features,finalize,confidence
+from v52_engine import number,features,finalize as _v52_finalize,confidence
 from v52_data import catalog,history_batch,fundamentals,benchmark_state,scan
 
 from v52_validation import cached_backtest,validate_pool,display_results,quality_reason
+
+# Quality context sidecar only; scan/checkpoint data structures stay unchanged.
+def _official_quality_for_run(run_id, create=False):
+    key='v53_quality_context:'+str(run_id)
+    if key not in st.session_state:
+        try:
+            from pathlib import Path
+            from v53_quality_adapter import context_for_run
+            root=Path(os.environ.get('V53_QUALITY_CONTEXT_DIR',str(Path(__file__).parent / '.v53_quality')))
+            st.session_state[key]=context_for_run(run_id,root,create=create)
+        except Exception:
+            st.session_state[key]=None
+    st.session_state['official_quality_context']=st.session_state[key]
+    return st.session_state[key]
+
+def finalize(rows,expected,backtests=None):
+    return _v52_finalize(rows,expected,backtests,
+        official_quality_context=st.session_state.get('official_quality_context'))
 
 def pool_backtests(rows,hist,bench):
     bar=st.progress(0.,text="歷史驗證準備中（使用已清洗行情，不重新下載）")
@@ -216,8 +234,10 @@ if start_clicked or resume_clicked or rescan_clicked:
     st.session_state.v52_scan_context=context
     if not resume_clicked:
         token=auto.create(context)
+        _official_quality_for_run(token,create=True)
         st.session_state.v52_auto_token=token;st.query_params['scan_task']=token
         auto.ensure(token);st.rerun()
+    _official_quality_for_run(checkpoint_id,create=False)
     bar=st.progress(0,text='開始分批下載…')
     batch_display=st.empty()
     phase_display=st.empty()
@@ -276,6 +296,7 @@ def automatic_progress(token):
     marker=(token,state['batch'],state['status'])
     if result is not None and state['status'] in ('paused','cancelled','completed','failed') and st.session_state.get('v52_auto_delivered')!=marker:
         rows,audit,hist,expected=result;context=auto.context_for(task)
+        _official_quality_for_run(token,create=False)
         bt={};ranked=finalize(rows,expected,bt)
         if state['status']=='completed' and not ranked.empty:
             bt=pool_backtests(rows,hist,context['bench'])

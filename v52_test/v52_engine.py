@@ -218,10 +218,22 @@ def explain(r):
         (strengths if pe<ref else risks).append(f'本益比{pe:.1f}，'+('低於' if pe<ref else '不低於')+f'本次同產業正本益比中位數{ref:.1f}；非歷史估值比較')
     return {'Strengths':strengths,'Risks':risks,'Conclusion':'排名反映本次可用資料與固定實驗權重的綜合結果；各維度可能矛盾，歷史技術統計不代表完整模型或未來報酬。'}
 
-def finalize(rows,expected,backtests=None,cfg=DEFAULT):
+def finalize(rows,expected,backtests=None,cfg=DEFAULT,official_quality_context=None):
     out=[];backtests=backtests or {}
-    for r in enrich_industries(rows,expected,cfg):
+    enriched=enrich_industries(rows,expected,cfg)
+    quality_inputs={}
+    if official_quality_context is not None:
+        try:
+            from v53_quality_adapter import prepare_quality_inputs
+            quality_inputs=prepare_quality_inputs(enriched,official_quality_context,cfg)
+        except Exception:
+            quality_inputs={}  # Fail open to unchanged V5.2, never interrupt scan.
+    for r in enriched:
         r=phase_a(r,r.get('Market Regime','N/A'),cfg)
+        if r['Ticker'] in quality_inputs:
+            quality_row,quality_metadata=quality_inputs[r['Ticker']]
+            r['Quality Score'],r['Quality Coverage'],r['Quality Details']=quality(quality_row,cfg)
+            r.update(quality_metadata)
         r['Total Score'],r['Total Coverage'],r['Total Details']=total_score(r,cfg)
         bt=backtests.get(r['Ticker'],{}).get('summary',{}).get(20,{})
         r['20D Win Rate']=bt.get('Win Rate');r['20D N']=bt.get('N')
