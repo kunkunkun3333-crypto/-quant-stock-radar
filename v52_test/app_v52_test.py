@@ -4,6 +4,11 @@ import runpy
 from pathlib import Path
 # Opt-in diagnostic branch; default execution remains the original app.
 import streamlit as st
+# Read-only diagnostics must precede every existing application/audit branch.
+if st.query_params.get('v53_pe_context_diag') == '1':
+    from v53_pe_context_diagnostic import main as run_pe_context_diagnostic
+    run_pe_context_diagnostic(st)
+    st.stop()
 if st.query_params.get('v53_official_audit') == '1':
     from v53_official_acceptance import main as run_official_acceptance
     run_official_acceptance()
