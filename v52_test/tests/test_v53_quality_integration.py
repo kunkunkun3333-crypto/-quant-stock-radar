@@ -23,12 +23,24 @@ def rows(n=5):
         'Benchmark Return20':2.,'Market Regime':'Bull','Trend':'Bullish','Stale':False}) for i in range(n)]
 
 
-def context(n=5):
+def context_without_eps(n=5):
     return dict(as_of='2026-10-11T12:00:00+08:00',context_version='frozen-v1',
         official={'sources':{'twse_pe':{'status':'downloaded','fetched_at':'2026-10-10T00:00:00+08:00',
         'source':'TWSE','records':{str(i):{'source_date':'2026-10-08','values':{'official_pe':10.+i,'official_basic_eps_ytd':999}} for i in range(n)}}}},
         selection={'status':'available','selected_period':'2026-08','monthly_revenue_yoy_eligible':True,
         'audits':[dict(market=m,period='2026-08',revenue_coverage=1.,yoy_coverage=1.,revenue_coverage_pass=True,yoy_coverage_pass=True) for m in ('TWSE','TPEX')]})
+
+
+def context(n=5):
+    c = context_without_eps(n)
+    c['official']['sources']['twse_eps'] = {
+        'status': 'downloaded', 'source': {'institution': 'TWSE'},
+        'fetched_at': '2026-10-10T00:00:00+08:00',
+        'records': {str(i): {'source_date': '2026-10-09',
+            'period': {'fiscal_year': 2026, 'fiscal_year_roc': 115,
+                       'quarter': 2, 'basis': 'cumulative_ytd'},
+            'values': {'official_basic_eps_ytd': 2.}} for i in range(n)}}
+    return c
 
 
 def monthly(selection,ticker):
@@ -131,7 +143,7 @@ class IntegrationTests(unittest.TestCase):
 class AppContextTests(unittest.TestCase):
     def helpers(self):
         from types import SimpleNamespace
-        source=Path(__file__).resolve().parents[1]/'app_v52.py'
+        source=Path(engine.__file__).resolve().parent/'app_v52.py'
         tree=ast.parse(source.read_text())
         funcs=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('_official_quality_for_run','finalize')]
         calls=[]
@@ -164,5 +176,84 @@ class AppContextTests(unittest.TestCase):
             ns['_official_quality_for_run']('one',True);ns['finalize']([],{}, {})
             ns['_official_quality_for_run']('two',True);ns['finalize']([],{}, {})
         self.assertEqual([c['context_version'] for c in calls],['one','two'])
+
+class EPSIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        self.mock = patch('v53_monthly_revenue_common.get_monthly_record', side_effect=monthly)
+        self.mock.start(); self.addCleanup(self.mock.stop)
+    def sample(self, value):
+        c=context();c['official']['sources']['twse_eps']['records']['0']['values']['official_basic_eps_ytd']=value
+        return c
+    def test_positive_zero_negative(self):
+        for value, score in [(2.,100.),(0.,0.),(-2.,0.)]:
+            with self.subTest(value=value):
+                f=finalize(rows(),self.sample(value))
+                self.assertEqual(factor(f,'EPS')['分數'],score)
+                self.assertEqual(f.loc['0.TW','quality_eps'],value)
+    def test_missing_nonfinite_no_yahoo_fallback(self):
+        for value in (None,float('nan'),float('inf'),-float('inf'),'2',True):
+            with self.subTest(value=value):
+                f=finalize(rows(),self.sample(value));self.assertIsNone(factor(f,'EPS')['分數'])
+                self.assertEqual(f.loc['0.TW','EPS'],2.)
+    def test_opposite_sign_and_input_immutable(self):
+        for yahoo, official in [(2.,-1.),(-2.,1.)]:
+            r=rows();r[0]['EPS']=yahoo;old=copy.deepcopy(r);c=self.sample(official);before=copy.deepcopy(c)
+            f=finalize(r,c)
+            self.assertEqual(f.loc['0.TW','EPS'],yahoo)
+            self.assertEqual(factor(f,'EPS')['分數'],100. if official>0 else 0.)
+            self.assertEqual(r,old);self.assertEqual(c,before)
+    def test_market_routing(self):
+        r=rows();r.append(dict(r[0],Ticker='0.TWO'))
+        c=self.sample(-1.);c['official']['sources']['tpex_eps']=copy.deepcopy(c['official']['sources']['twse_eps'])
+        c['official']['sources']['tpex_eps']['source']={'institution':'TPEX'}
+        c['official']['sources']['tpex_eps']['records']['0']['values']['official_basic_eps_ytd']=3.
+        f=finalize(r,c);self.assertEqual(f.loc['0.TW','quality_eps'],-1.)
+        self.assertEqual(f.loc['0.TWO','quality_eps'],3.)
+        self.assertEqual(f.loc['0.TWO','quality_eps_source'],{'institution':'TPEX'})
+    def test_missing_record(self):
+        c=context();del c['official']['sources']['twse_eps']['records']['0']
+        self.assertIsNone(factor(finalize(rows(),c),'EPS')['分數'])
+    def test_invalid_periods(self):
+        valid=context()['official']['sources']['twse_eps']['records']['0']['period']
+        cases=[None,{},dict(valid,fiscal_year=None),dict(valid,fiscal_year=True),dict(valid,fiscal_year='2026'),dict(valid,quarter=0),dict(valid,quarter=5),dict(valid,quarter=True),dict(valid,basis='trailing'),dict(valid,basis=None),dict(valid,fiscal_year_roc=114),dict(valid,quarter=4)]
+        for p in cases:
+            with self.subTest(period=p):
+                c=context();c['official']['sources']['twse_eps']['records']['0']['period']=p
+                self.assertIsNone(factor(finalize(rows(),c),'EPS')['分數'])
+    def test_unavailable_and_missing_source(self):
+        for missing in (False,True):
+            c=context()
+            if missing: del c['official']['sources']['twse_eps']
+            else:c['official']['sources']['twse_eps']['status']='unavailable'
+            self.assertIsNone(factor(finalize(rows(),c),'EPS')['分數'])
+    def test_coverage_and_redistribution(self):
+        a=finalize(rows(),self.sample(None));b=finalize(rows(),self.sample(1.))
+        self.assertEqual(b.loc['0.TW','Quality Coverage']-a.loc['0.TW','Quality Coverage'],10.)
+        detail=factor(b,'EPS');self.assertEqual(detail['原始權重'],10.)
+        self.assertAlmostEqual(detail['有效權重%'],100*10/b.loc['0.TW','Quality Coverage'])
+        self.assertAlmostEqual(b.loc['0.TW','Quality Score'],(a.loc['0.TW','Quality Score']*a.loc['0.TW','Quality Coverage']+100*10)/b.loc['0.TW','Quality Coverage'])
+    def test_other_factors_and_scores_unchanged(self):
+        a=finalize(rows(),self.sample(2.));b=finalize(rows(),self.sample(-2.))
+        for k in ('EPS Growth','P/E','Monthly Revenue YoY'):
+            self.assertEqual(factor(a,k),factor(b,k))
+        columns=[k for k in a.columns if k.startswith(('Risk','Entry','Trend','Industry','20D'))]+['EPS','EPS Growth','P/E','Monthly Revenue YoY']
+        pd.testing.assert_frame_equal(a[columns],b[columns])
+    def test_frozen_eps_reload(self):
+        with tempfile.TemporaryDirectory() as root:
+            c=context_for_run('eps-run',root,create=True,builder=lambda:self.sample(-2.))
+            d=context_for_run('eps-run',root,create=True,builder=lambda:self.fail('refresh forbidden'))
+            pd.testing.assert_frame_equal(finalize(rows(),c),finalize(rows(),d))
+    def test_metadata_and_fallback_preserved(self):
+        c=context();source=c['official']['sources']['twse_eps'];source['status']='stale_fallback'
+        f=finalize(rows(),c);row=f.loc['0.TW']
+        self.assertEqual(row['quality_eps_basis'],'cumulative_ytd')
+        self.assertEqual(row['quality_eps_period'],source['records']['0']['period'])
+        self.assertEqual(row['quality_eps_fetched_at'],source['fetched_at'])
+        self.assertEqual(row['quality_eps_source_date'],'2026-10-09')
+        self.assertEqual(row['quality_eps_status'],'stale_fallback')
+    def test_us_ignores_official_eps(self):
+        r=rows();r[0]['Ticker']='AAPL';r[0]['Market']='US';r[0]['EPS']=-3.
+        a=finalize(r);b=finalize(r,self.sample(10.))
+        self.assertEqual(a.loc['AAPL','Quality Score'],b.loc['AAPL','Quality Score'])
 
 if __name__=='__main__':unittest.main()
