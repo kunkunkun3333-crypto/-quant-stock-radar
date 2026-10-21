@@ -122,6 +122,53 @@ def context_for_run(run_id, root, *, create=False, builder=None):
         return None
 
 
+def official_eps_input(context, market, code, as_of):
+    """YTD profitability only; no Yahoo fallback or period conversion."""
+    sources = context.get('official', {}).get('sources', {})
+    source = sources.get('tpex_eps' if market == 'TPEX' else 'twse_eps', {})
+    source = source if isinstance(source, dict) else {}
+    records = source.get('records', {})
+    record = records.get(code) if isinstance(records, dict) else None
+    record = record if isinstance(record, dict) else {}
+    period = record.get('period')
+    meta = dict(quality_eps=None,
+                quality_eps_basis=period.get('basis') if isinstance(period, dict) else None,
+                quality_eps_period=copy.deepcopy(period),
+                quality_eps_source=copy.deepcopy(record.get('source', source.get('source'))),
+                quality_eps_source_date=record.get('source_date'),
+                quality_eps_fetched_at=record.get('fetched_at', source.get('fetched_at')),
+                quality_eps_status='official_source_unavailable')
+    if source.get('status') not in ('downloaded', 'fresh_cache', 'stale_fallback'):
+        return meta
+    if not record:
+        meta['quality_eps_status'] = 'official_row_missing'
+        return meta
+    meta['quality_eps_status'] = 'official_period_invalid'
+    if not isinstance(period, dict):
+        return meta
+    year, quarter = period.get('fiscal_year'), period.get('quarter')
+    roc = period.get('fiscal_year_roc')
+    if (type(year) is not int or not 1912 <= year <= 2910 or
+            type(quarter) is not int or not 1 <= quarter <= 4 or
+            ('fiscal_year_roc' in period and
+             (type(roc) is not int or roc != year - 1911))):
+        return meta
+    # A completed YTD reporting period must not extend beyond the frozen as_of.
+    end = date(year, quarter * 3, (31 if quarter in (1, 4) else 30))
+    if end > as_of.date():
+        return meta
+    if period.get('basis') != 'cumulative_ytd':
+        meta['quality_eps_status'] = 'official_basis_invalid'
+        return meta
+    values = record.get('values', {})
+    value = values.get('official_basic_eps_ytd') if isinstance(values, dict) else None
+    if not finite(value):
+        meta['quality_eps_status'] = 'official_value_missing_or_invalid'
+        return meta
+    meta.update(quality_eps=value, quality_eps_status=source['status'])
+    return meta
+
+
 def prepare_quality_inputs(rows, context, cfg):
     """Return separate per-ticker rows and metadata; original rows stay untouched."""
     from v53_monthly_revenue_common import get_monthly_record
@@ -172,6 +219,9 @@ def prepare_quality_inputs(rows, context, cfg):
                         quality_peer_pe_median=None, quality_monthly_revenue_yoy=ratio,
                         quality_monthly_period=period, quality_monthly_status='eligible' if ratio is not None else 'N/A',
                         official_quality_context_version=context.get('context_version'))
+        eps_metadata = official_eps_input(context, market, ticker.rsplit('.', 1)[0], as_of)
+        q['EPS'] = eps_metadata['quality_eps']
+        metadata.update(eps_metadata)
         result[ticker] = (q, metadata)
     groups = {}
     for ticker,(q,meta) in result.items():
