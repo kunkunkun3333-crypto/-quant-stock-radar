@@ -5,6 +5,10 @@ from pathlib import Path
 # Opt-in diagnostic branch; default execution remains the original app.
 import streamlit as st
 # Read-only diagnostics must precede every existing application/audit branch.
+if st.query_params.get('v53_eps_history_diag') == '1':
+    from v53_eps_history_diagnostic import main as run_eps_history_diagnostic
+    run_eps_history_diagnostic(st)
+    st.stop()
 if st.query_params.get('v53_pe_context_diag') == '1':
     from v53_pe_context_diagnostic import main as run_pe_context_diagnostic
     run_pe_context_diagnostic(st)
