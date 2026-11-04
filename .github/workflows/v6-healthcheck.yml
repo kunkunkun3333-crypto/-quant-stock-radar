@@ -1,0 +1,32 @@
+name: V6 Offline Health Check
+
+on:
+  push:
+    branches:
+      - upgrade/v6.0
+  pull_request:
+    paths:
+      - "v52_test/**"
+      - "tools/v6_healthcheck.py"
+      - "tests/test_v6_healthcheck.py"
+      - ".github/workflows/v6-healthcheck.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Offline source and startup entrypoint check
+        run: python tools/v6_healthcheck.py --root . --json
+      - name: Offline regression tests
+        run: python -m unittest discover -s tests -p 'test_v6_healthcheck.py' -v
